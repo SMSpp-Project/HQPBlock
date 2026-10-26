@@ -204,7 +204,7 @@ endif ()
 # that has been extracted before) downloads and extracts again instead of
 # taking them for the current ones.
 set(DATA_VERSION 2026-10-26)
-set(DATA_PROJECT 0)  # the id of the GitLab project, once it exists
+set(DATA_PROJECT 88117102)
 set(DATA_PREFIX hqp)
 set(DATA_FORMATS nc4)
 
