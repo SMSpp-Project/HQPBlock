@@ -30,6 +30,7 @@
 
 # --- Test binaries ------------------------------------------
 test/HQPBlock_unit_test
+test/HQPBlock_radial_test
 
 # --- CMake --------------------------------------------------
 build/
@@ -62,3 +63,8 @@ ehthumbs.db
 .directory
 .fuse_hidden*
 .nfs*
+
+# --- instances (distributed through the GitLab Package Registry) ---
+data/nc4
+data/*.tgz
+data/.extracted*

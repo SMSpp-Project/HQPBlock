@@ -6,11 +6,61 @@
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
 
-<!-- TODO: describe here, in a few paragraphs, what the module provides: the
-     :Block (and/or :Solver) classes it defines and the mathematical
-     structure they encode. -->
+`HQPBlock` is a SMS++ :Block for the hierarchical (lexicographic)
+Quadratic Programs of task-priority control, e.g., in the Model Predictive
+Control of robots. Level p (p = 0 being the highest priority) has the tasks
+`we_p (A_p x - b_p) = v_p` and `wi_p (C_p x - d_p) <= w_p`, with `w_p >= 0`,
+and it minimizes `||v_p||^2 / 2 + ||w_p||^2 / 2` (plus, possibly, the
+regularization `eps ||x - c||^2 / 2`) keeping the slacks of the higher levels
+at their optimal values. Thus, an equality task of a higher level keeps its
+optimal residual, and an inequality task is never violated more than at its
+optimum.
 
-`HQPBlock` is a SMS++ :Block for ...
+The classical approach solves each level in the null space of the equality
+tasks of the higher ones, and therefore it faces a different QP at each
+level. In an `HQPBlock` all the levels are instead one model in the original
+variables: the abstract representation has the `ColVariable` `x`, `v` and
+`w`, a `FRowConstraint` with a `LinearFunction` for each row of each level,
+and a `FRealObjective` with a `DQuadFunction`. Moving to the next level fixes
+the slacks of the level just solved and changes some coefficients of the
+`Objective`; a new step of the Model Predictive Control changes `b_p`, `d_p`,
+`A_p` and `C_p` through the methods of the Block. Since all these are
+Modification of the same Block, a Solver that can re-optimize (typically an
+active-set one) starts each solve from the previous solution.
+
+`HQPSolver` solves the levels of an `HQPBlock` one after the other with an
+inner Solver attached to the same Block. The inner Solver is any Solver of
+convex QPs with linear constraints (in practice a :MILPSolver, such as
+`DAQPMILPSolver` or `MOSEKMILPSolver`), taken from the factory by its name
+in the `BlockSolverConfig` given by the parameter `str_HQP_BSCfg`. With
+`int_HQP_Prox` the center of the regularization follows the solution of the
+previous level, and each level is then the problem of the null-space
+approach with a regularized step. With `int_HQP_RelaxLower` (the default)
+the rows of the levels below the current one are relaxed and their slacks
+fixed to 0; this keeps the Hessian positive definite if `eps > 0`, while the
+rows left in the model with free slacks make it singular, which the inner
+Solvers handle rather less accurately.
+
+An `HQPBlock` is serialized into and deserialized out of netCDF, with the
+rows in compressed sparse row form (cf. `HQPBlock::deserialize()`). The
+script `tools/npz2nc4.py` converts a hierarchy given as a `.npz` file (keys
+`A_<p>`, `b_<p>`, `C_<p>`, `d_<p>` and, optionally, `we_<p>`, `wi_<p>`) into
+that format. The instances of `data/nc4` are some steps of the radial
+switching scenario of a Python implementation of the centralized
+hierarchical Model Predictive Control of a team of robots, with the solution
+of each level of that implementation.
+
+The tester `test/test.cpp` compares each `HQPSolver` of `test/BSPar.txt`
+with an independent implementation of the null-space approach, level by
+level. The inner Solvers are DAQP and MOSEK, with the rows of the lower
+levels relaxed or not and the center of the regularization moving or not.
+The hierarchies are random ones and those that may be degenerate: a level of
+equalities only, one of inequalities only, an empty one, an inequality task
+that cannot be satisfied at its level, one already satisfied, dependent rows
+and weights. The tester also checks a change of all the data between two
+solves (against a new Block solved from scratch) and the netCDF format,
+while `test/test_radial.cpp` does the same on the instances of `data/nc4`,
+also reaching each step by Modification of the Block of the previous one.
 
 
 ## Getting started
@@ -22,6 +72,11 @@ your system.
 
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
   requirements.
+- For the tests, [MILPSolver](https://gitlab.com/smspp/milpsolver), which
+  provides the inner Solver of `HQPSolver`; without it the testers check
+  only what needs no inner Solver. The instances of `data/nc4` are
+  downloaded by the tests from the GitLab Package Registry.
+- For the tools, Python with numpy and netCDF4 (`tools/npz2nc4.py`).
 
 ### Build and install with CMake
 
@@ -93,6 +148,10 @@ conduct, and the process for submitting merge requests to us.
 ## Authors
 
 ### Current Lead Authors
+
+- **Antonio Frangioni**  
+  Dipartimento di Informatica  
+  Università di Pisa
 
 - **Donato Meoli**  
   Dipartimento di Informatica  
