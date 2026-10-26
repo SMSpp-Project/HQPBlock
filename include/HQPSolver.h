@@ -64,41 +64,48 @@ namespace SMSpp_di_unipi_it
  *         \mbox{the rows of all the levels} \, \Big\} \;\;,
  * \f]
  *
- * by an inner Solver attached to the same HQPBlock. The inner Solver is
- * any Solver that can deal with a convex QP with linear constraints (e.g.,
- * a :MILPSolver); it is created through the Solver factory out of the
- * BlockSolverConfig whose filename is the string parameter str_HQP_BSCfg
- * [see set_par()], the first of its Solver that is in the factory being
- * used, together with its ComputeConfig.
+ by an inner Solver attached to the same HQPBlock, a different one for
+ * each level. The inner Solver is any Solver that can deal with a convex
+ * QP with linear constraints (e.g., a :MILPSolver); all those of the levels
+ * are created through the Solver factory out of the same BlockSolverConfig,
+ * whose filename is the string parameter strInnerBSC [see set_par()], the
+ * first of its Solver that is in the factory being used, together with its
+ * ComputeConfig. That of level 0 is created as soon as both the Block and
+ * the BlockSolverConfig are there, that of level p > 0 the first time
+ * compute() reaches level p, and it then loads the HQPBlock as it is.
  *
- * The inner Solver is attached to the HQPBlock with set_Block() but not
+ * The inner Solvers are attached to the HQPBlock with set_Block() but not
  * registered to it: it is the HQPSolver, registered to the HQPBlock, that
- * receives the Modification of the HQPBlock and passes them on to the inner
- * Solver. A compute() is:
+ * receives the Modification of the HQPBlock and passes each of them on to
+ * all the inner Solvers, so that each one, when it solves its level, has
+ * the HQPBlock as it is then. A compute() is:
  *
  * - the HQPBlock is brought to the problem of level 0 [see
  *   HQPBlock::reset_levels()], with the rows of the lower levels enforced
- *   or relaxed according to int_HQP_RelaxLower;
+ *   or relaxed according to intRelaxLower;
  *
- * - for each level p, the inner Solver solves \f$ (L_p) \f$ and writes its
- *   solution into the HQPBlock, whose slacks of level p are then fixed at
- *   their values at that \f$ x \f$ and the slacks of level p + 1 enter the
- *   Objective [see HQPBlock::next_level()].
+ * - for each level p, the inner Solver of level p solves \f$ (L_p) \f$ and
+ *   writes its solution into the HQPBlock, whose slacks of level p are then
+ *   fixed at their values at that \f$ x \f$ and the slacks of level p + 1
+ *   enter the Objective [see HQPBlock::next_level()].
  *
- * All the changes of a level are Modification of the same HQPBlock, so an
- * inner Solver that re-optimizes (e.g., an active-set one, which keeps its
- * working set) starts each level from the solution of the previous one, and
- * each compute() from the solution of the previous compute(), e.g., in a
- * Model Predictive Control scheme whose steps change \f$ b_p \f$, \f$ d_p
- * \f$, \f$ A_p \f$ and \f$ C_p \f$ with the methods of the HQPBlock.
+ * All the changes are Modification of the same HQPBlock, so an inner
+ * Solver that re-optimizes (e.g., an active-set one, which keeps its
+ * working set) starts the solve of its level from its solution of the same
+ * level in the previous compute(), e.g., in a Model Predictive Control
+ * scheme whose steps change \f$ b_p \f$, \f$ d_p \f$, \f$ A_p \f$ and
+ * \f$ C_p \f$ with the methods of the HQPBlock: two consecutive steps have
+ * close problems at the same level, while two levels of the same step have
+ * different objectives and slacks fixed; the iterations of all the inner
+ * Solvers in the last compute() are given by get_elapsed_iterations().
  *
- * With int_HQP_Prox == 1 the center of the regularization of the HQPBlock
+ * With intProxCenter == 1 the center of the regularization of the HQPBlock
  * is \f$ c_0 = 0 \f$ at level 0 and \f$ c_p = x^*_{p-1} \f$, the solution
  * of the previous level, afterwards: if \f$ \varepsilon > 0 \f$, each level
  * then gives the solution of the classical approach that solves level p in
  * the null space of the equality tasks of the higher levels, with the
  * regularization of the step from the previous solution [see HQPBlock.h].
- * With int_HQP_Prox == 0 the center is 0 at all the levels.
+ * With intProxCenter == 0 the center is 0 at all the levels.
  *
  * After compute() the solution of each level solved is available [see
  * get_level_x(), get_level_value(), get_level_v() and
@@ -121,29 +128,29 @@ class HQPSolver : public Solver
 
  /// public enum for the int parameters of HQPSolver
  enum int_par_type_HQPS {
-  int_HQP_Prox = intLastAlgPar ,  ///< center at the previous solution
-  int_HQP_RelaxLower ,            ///< relax the rows of the lower levels
+  intProxCenter = intLastAlgPar ,  ///< center at the previous solution
+  intRelaxLower ,                  ///< relax the rows of the lower levels
   intLastHQPSPar  ///< first allowed int parameter for derived classes
   };
 
  /// public enum for the double parameters of HQPSolver
  enum dbl_par_type_HQPS {
-  dbl_HQP_SlackTol = dblLastAlgPar ,  ///< tolerance on the fixed w
+  dblSlackTol = dblLastAlgPar ,  ///< tolerance on the fixed w
   dblLastHQPSPar  ///< first allowed double parameter for derived classes
   };
 
  /// public enum for the string parameters of HQPSolver
  enum str_par_type_HQPS {
-  str_HQP_BSCfg = strLastAlgPar ,  ///< BlockSolverConfig of the inner one
+  strInnerBSC = strLastAlgPar ,  ///< BlockSolverConfig of the inner one
   strLastHQPSPar  ///< first allowed string parameter for derived classes
   };
 
 /*---------------------- CONSTRUCTOR AND DESTRUCTOR ------------------------*/
  /// constructor: the HQPSolver has no Block and no inner Solver
 
- HQPSolver( void ) : Solver() , f_bsc( nullptr ) , f_inner( nullptr ) ,
-  f_prox( 0 ) , f_relax( 1 ) , f_verb( 0 ) , f_tol( 0 ) ,
-  f_status( kUnEval ) {}
+ HQPSolver( void ) : Solver() , f_bsc( nullptr ) , f_prox( 0 ) ,
+  f_relax( 1 ) , f_verb( 0 ) , f_tol( 0 ) , f_status( kUnEval ) ,
+  f_iter( 0 ) {}
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// destructor: deletes the inner Solver and the BlockSolverConfig
@@ -161,11 +168,11 @@ class HQPSolver : public Solver
  /// sets the int parameters of HQPSolver
  /** Sets the int parameters specific of HQPSolver:
   *
-  * - int_HQP_Prox [0]: if 1, the center of the regularization of the
+  * - intProxCenter [0]: if 1, the center of the regularization of the
   *   HQPBlock is moved to the solution of the previous level (and to 0 at
   *   level 0), if 0 it is 0 at all the levels;
   *
-  * - int_HQP_RelaxLower [1]: if 0, the rows of the levels below the
+  * - intRelaxLower [1]: if 0, the rows of the levels below the
   *   current one are enforced, their slacks free and out of the Objective;
   *   if 1, they are relaxed and their slacks fixed to 0 [see
   *   HQPBlock::reset_levels()]. */
@@ -176,7 +183,7 @@ class HQPSolver : public Solver
  /// sets the double parameters of HQPSolver
  /** Sets the double parameters specific of HQPSolver:
   *
-  * - dbl_HQP_SlackTol [0]: the tolerance \f$ \tau \geq 0 \f$ added to the
+  * - dblSlackTol [0]: the tolerance \f$ \tau \geq 0 \f$ added to the
   *   slacks \f$ w_p \f$ when they are fixed [see HQPBlock::next_level()]. */
 
  void set_par( idx_type par , double value ) override;
@@ -185,20 +192,20 @@ class HQPSolver : public Solver
  /// sets the string parameters of HQPSolver
  /** Sets the string parameters specific of HQPSolver:
   *
-  * - str_HQP_BSCfg [""]: the name of the file out of which the
+  * - strInnerBSC [""]: the name of the file out of which the
   *   BlockSolverConfig of the inner Solver is deserialized; the inner Solver
   *   is (re)created as soon as both it and the Block are there. */
 
  void set_par( idx_type par , std::string && value ) override;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
- /// receives a Modification of the HQPBlock and passes it to the inner one
+ /// receives a Modification of the HQPBlock and passes it to the inner ones
 
  void add_Modification( sp_Mod & mod ) override {
   if( f_no_Mod )
    return;
-  if( f_inner )
-   f_inner->add_Modification( mod );
+  for( auto s : v_inner )
+   s->add_Modification( mod );
   }
 
 /*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
@@ -279,16 +286,31 @@ class HQPSolver : public Solver
  /// returns the slacks \f$ w_p \f$ at the solution of level p
  /** Returns the slacks \f$ \max \{ 0 , W^i_p ( C_p x - d_p ) \} \f$ of
   * level p at the \f$ x \f$ of the solution of level p, i.e., the values at
-  * which they are fixed for the next levels (but for dbl_HQP_SlackTol). */
+  * which they are fixed for the next levels (but for dblSlackTol). */
 
  [[nodiscard]] const Vec_double & get_level_w( Index p ) const {
   return( v_wl.at( p ) );
   }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
- /// returns the inner Solver (nullptr if there is none)
+ /// returns the iterations of the inner Solvers in the last compute()
+ /** Returns the sum over the levels solved by the last compute() of the
+  * get_elapsed_iterations() of the inner Solver of each level. */
 
- [[nodiscard]] Solver * get_inner_Solver( void ) const { return( f_inner ); }
+ [[nodiscard]] long get_elapsed_iterations( void ) const override {
+  return( f_iter );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the inner Solver of level p (nullptr if there is none)
+ /** Returns the inner Solver of level p, nullptr if it has not been created
+  * yet [see create_inner()]; that of level 0 is there as soon as the
+  * HQPSolver has both the Block and a BlockSolverConfig with a Solver that
+  * is in the factory. */
+
+ [[nodiscard]] Solver * get_inner_Solver( Index p = 0 ) const {
+  return( p < v_inner.size() ? v_inner[ p ] : nullptr );
+  }
 
 /*----------------- METHODS FOR HANDLING THE PARAMETERS --------------------*/
  /// returns the number of int parameters, those of Solver included
@@ -314,9 +336,9 @@ class HQPSolver : public Solver
  /// returns the default value of the int parameter par [see set_par()]
 
  [[nodiscard]] int get_dflt_int_par( idx_type par ) const override {
-  if( par == int_HQP_Prox )
+  if( par == intProxCenter )
    return( 0 );
-  if( par == int_HQP_RelaxLower )
+  if( par == intRelaxLower )
    return( 1 );
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -324,7 +346,7 @@ class HQPSolver : public Solver
  /// returns the default value of the double parameter par
 
  [[nodiscard]] double get_dflt_dbl_par( idx_type par ) const override {
-  if( par == dbl_HQP_SlackTol )
+  if( par == dblSlackTol )
    return( 0 );
   return( Solver::get_dflt_dbl_par( par ) );
   }
@@ -334,7 +356,7 @@ class HQPSolver : public Solver
  [[nodiscard]] const std::string & get_dflt_str_par( idx_type par )
   const override {
   static const std::string empty;
-  if( par == str_HQP_BSCfg )
+  if( par == strInnerBSC )
    return( empty );
   return( Solver::get_dflt_str_par( par ) );
   }
@@ -344,9 +366,9 @@ class HQPSolver : public Solver
  /// returns the current value of the int parameter par
 
  [[nodiscard]] int get_int_par( idx_type par ) const override {
-  if( par == int_HQP_Prox )
+  if( par == intProxCenter )
    return( f_prox );
-  if( par == int_HQP_RelaxLower )
+  if( par == intRelaxLower )
    return( f_relax );
   if( par == intLogVerb )
    return( f_verb );
@@ -356,7 +378,7 @@ class HQPSolver : public Solver
  /// returns the current value of the double parameter par
 
  [[nodiscard]] double get_dbl_par( idx_type par ) const override {
-  if( par == dbl_HQP_SlackTol )
+  if( par == dblSlackTol )
    return( f_tol );
   return( Solver::get_dbl_par( par ) );
   }
@@ -365,7 +387,7 @@ class HQPSolver : public Solver
 
  [[nodiscard]] const std::string & get_str_par( idx_type par )
   const override {
-  if( par == str_HQP_BSCfg )
+  if( par == strInnerBSC )
    return( f_bsc_name );
   return( Solver::get_str_par( par ) );
   }
@@ -376,10 +398,10 @@ class HQPSolver : public Solver
 
  [[nodiscard]] idx_type int_par_str2idx( const std::string & name )
   const override {
-  if( name == "int_HQP_Prox" )
-   return( int_HQP_Prox );
-  if( name == "int_HQP_RelaxLower" )
-   return( int_HQP_RelaxLower );
+  if( name == "intProxCenter" )
+   return( intProxCenter );
+  if( name == "intRelaxLower" )
+   return( intRelaxLower );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -387,8 +409,8 @@ class HQPSolver : public Solver
 
  [[nodiscard]] idx_type dbl_par_str2idx( const std::string & name )
   const override {
-  if( name == "dbl_HQP_SlackTol" )
-   return( dbl_HQP_SlackTol );
+  if( name == "dblSlackTol" )
+   return( dblSlackTol );
   return( Solver::dbl_par_str2idx( name ) );
   }
 
@@ -396,8 +418,8 @@ class HQPSolver : public Solver
 
  [[nodiscard]] idx_type str_par_str2idx( const std::string & name )
   const override {
-  if( name == "str_HQP_BSCfg" )
-   return( str_HQP_BSCfg );
+  if( name == "strInnerBSC" )
+   return( strInnerBSC );
   return( Solver::str_par_str2idx( name ) );
   }
 
@@ -407,10 +429,10 @@ class HQPSolver : public Solver
 
  [[nodiscard]] const std::string & int_par_idx2str( idx_type idx )
   const override {
-  static const std::string pars[] = { "int_HQP_Prox" ,
-                                      "int_HQP_RelaxLower" };
-  if( ( idx >= int_HQP_Prox ) && ( idx < intLastHQPSPar ) )
-   return( pars[ idx - int_HQP_Prox ] );
+  static const std::string pars[] = { "intProxCenter" ,
+                                      "intRelaxLower" };
+  if( ( idx >= intProxCenter ) && ( idx < intLastHQPSPar ) )
+   return( pars[ idx - intProxCenter ] );
   return( Solver::int_par_idx2str( idx ) );
   }
 
@@ -418,8 +440,8 @@ class HQPSolver : public Solver
 
  [[nodiscard]] const std::string & dbl_par_idx2str( idx_type idx )
   const override {
-  static const std::string par = "dbl_HQP_SlackTol";
-  if( idx == dbl_HQP_SlackTol )
+  static const std::string par = "dblSlackTol";
+  if( idx == dblSlackTol )
    return( par );
   return( Solver::dbl_par_idx2str( idx ) );
   }
@@ -428,8 +450,8 @@ class HQPSolver : public Solver
 
  [[nodiscard]] const std::string & str_par_idx2str( idx_type idx )
   const override {
-  static const std::string par = "str_HQP_BSCfg";
-  if( idx == str_HQP_BSCfg )
+  static const std::string par = "strInnerBSC";
+  if( idx == strInnerBSC )
    return( par );
   return( Solver::str_par_idx2str( idx ) );
   }
@@ -440,16 +462,25 @@ class HQPSolver : public Solver
 
 /*-------------------------- PROTECTED METHODS -----------------------------*/
 
- /// creates the inner Solver out of the BlockSolverConfig and attaches it
- /** Creates, through the Solver factory, the first Solver of the
-  * BlockSolverConfig of str_HQP_BSCfg that is in the factory, configures it
-  * with its ComputeConfig and attaches it to the Block (without registering
-  * it); if none of them is in the factory there is no inner Solver. */
+ /// creates the inner Solver of level 0 [see new_inner()]
+ /** Creates the inner Solver of level 0 with new_inner(); if none of the
+  * Solver of the BlockSolverConfig is in the factory there is no inner
+  * Solver, and compute() returns kError. */
 
  void create_inner( void );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
- /// detaches and deletes the inner Solver, if any
+ /// creates an inner Solver out of the BlockSolverConfig and attaches it
+ /** Creates, through the Solver factory, the first Solver of the
+  * BlockSolverConfig of strInnerBSC that is in the factory, configures it
+  * with its ComputeConfig and attaches it to the Block (without registering
+  * it); returns nullptr if there is no Block, no BlockSolverConfig or none
+  * of its Solver is in the factory. */
+
+ Solver * new_inner( void );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// detaches and deletes the inner Solvers, if any
 
  void drop_inner( void );
 
@@ -457,14 +488,15 @@ class HQPSolver : public Solver
 
  std::string f_bsc_name;      ///< filename of the inner BlockSolverConfig
  BlockSolverConfig * f_bsc;   ///< the inner BlockSolverConfig
- Solver * f_inner;            ///< the inner Solver
+ std::vector< Solver * > v_inner;  ///< the inner Solver of each level
 
- int f_prox;                  ///< int_HQP_Prox
- int f_relax;                 ///< int_HQP_RelaxLower
+ int f_prox;                  ///< intProxCenter
+ int f_relax;                 ///< intRelaxLower
  int f_verb;                  ///< intLogVerb
- double f_tol;                ///< dbl_HQP_SlackTol
+ double f_tol;                ///< dblSlackTol
 
  int f_status;                ///< status of the last compute()
+ long f_iter;                 ///< iterations of the inner Solvers in it
  std::vector< int > v_stat;   ///< status of each level tried
  std::vector< Vec_double > v_xl;  ///< x of each level solved
  std::vector< Vec_double > v_vl;  ///< v of each level solved

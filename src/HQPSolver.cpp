@@ -76,10 +76,10 @@ void HQPSolver::set_Block( Block * block )
 void HQPSolver::set_par( idx_type par , int value )
 {
  switch( par ) {
-  case( int_HQP_Prox ):
+  case( intProxCenter ):
    f_prox = value ? 1 : 0;
    break;
-  case( int_HQP_RelaxLower ):
+  case( intRelaxLower ):
    f_relax = value ? 1 : 0;
    break;
   case( intLogVerb ):
@@ -94,13 +94,13 @@ void HQPSolver::set_par( idx_type par , int value )
 
 void HQPSolver::set_par( idx_type par , double value )
 {
- if( par != dbl_HQP_SlackTol ) {
+ if( par != dblSlackTol ) {
   Solver::set_par( par , value );
   return;
   }
  if( ! ( value >= 0 ) )
   throw( std::invalid_argument( "HQPSolver::set_par: negative "
-                                "dbl_HQP_SlackTol" ) );
+                                "dblSlackTol" ) );
  f_tol = value;
  }
 
@@ -108,7 +108,7 @@ void HQPSolver::set_par( idx_type par , double value )
 
 void HQPSolver::set_par( idx_type par , std::string && value )
 {
- if( par != str_HQP_BSCfg ) {
+ if( par != strInnerBSC ) {
   Solver::set_par( par , std::move( value ) );
   return;
   }
@@ -148,7 +148,7 @@ int HQPSolver::compute( bool changedvars )
  v_val.clear();
 
  auto hb = dynamic_cast< HQPBlock * >( f_Block );
- if( ( ! hb ) || ( ! f_inner ) || ( ! hb->get_num_levels() ) ) {
+ if( ( ! hb ) || v_inner.empty() || ( ! hb->get_num_levels() ) ) {
   unlock();
   return( f_status = kError );
   }
@@ -176,10 +176,18 @@ int HQPSolver::compute( bool changedvars )
  unlock_block();
 
  f_status = kOK;
+ f_iter = 0;
  for( Index p = 0 ; p < P ; ++p ) {
-  const int st = f_inner->compute();
+  // the inner Solver of a level is created the first time the level is
+  // solved, and it loads the HQPBlock as it is then
+  if( v_inner.size() <= p )
+   v_inner.push_back( new_inner() );
+
+  auto inner = v_inner[ p ];
+  const int st = inner->compute();
+  f_iter += inner->get_elapsed_iterations();
   v_stat.push_back( st );
-  if( ( st < kOK ) || ( st >= kError ) || ( ! f_inner->has_var_solution() ) )
+  if( ( st < kOK ) || ( st >= kError ) || ( ! inner->has_var_solution() ) )
   {
    f_status = ( ( st >= kOK ) && ( st < kError ) ) ? kError : st;
    if( f_log && verb )
@@ -191,7 +199,7 @@ int HQPSolver::compute( bool changedvars )
    f_status = st;
 
   lock_block();
-  f_inner->get_var_solution();
+  inner->get_var_solution();
 
   Vec_double x( n );
   for( Index j = 0 ; j < n ; ++j )
@@ -248,33 +256,47 @@ void HQPSolver::get_var_solution( Configuration * solc )
 /*--------------------------------------------------------------------------*/
 /*--------------------------- PROTECTED METHODS ----------------------------*/
 /*--------------------------------------------------------------------------*/
-// the first Solver of the BlockSolverConfig that is in the factory becomes
-// the inner Solver, with its ComputeConfig (if any)
+// the inner Solver of level 0; those of the other levels are created by
+// compute()
 
 void HQPSolver::create_inner( void )
 {
+ if( auto s = new_inner() )
+  v_inner.push_back( s );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the first Solver of the BlockSolverConfig that is in the factory, with its
+// ComputeConfig (if any), attached to the Block; nullptr if there is none
+
+Solver * HQPSolver::new_inner( void )
+{
+ if( ! ( f_Block && f_bsc ) )
+  return( nullptr );
+
  const auto & names = f_bsc->get_SolverNames();
  const auto & cfgs = f_bsc->get_SolverConfigs();
  for( Index i = 0 ; i < names.size() ; ++i ) {
   if( ! Solver::has_Solver( names[ i ] ) )
    continue;
-  f_inner = Solver::new_Solver( names[ i ] );
+  auto s = Solver::new_Solver( names[ i ] );
   if( ( i < cfgs.size() ) && cfgs[ i ] )
-   f_inner->set_ComputeConfig( cfgs[ i ] );
-  f_inner->set_Block( f_Block );
-  return;
+   s->set_ComputeConfig( cfgs[ i ] );
+  s->set_Block( f_Block );
+  return( s );
   }
+ return( nullptr );
  }
 
 /*--------------------------------------------------------------------------*/
 
 void HQPSolver::drop_inner( void )
 {
- if( ! f_inner )
-  return;
- f_inner->set_Block( nullptr );
- delete f_inner;
- f_inner = nullptr;
+ for( auto s : v_inner ) {
+  s->set_Block( nullptr );
+  delete s;
+  }
+ v_inner.clear();
  }
 
 /*--------------------------------------------------------------------------*/

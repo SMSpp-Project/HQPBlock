@@ -13,8 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HQPBlock`, the hierarchical (lexicographic) QP as one model in the
   original variables, with the methods that move it from a level to the next
   one and change its data by Modification, and its netCDF format
-- `HQPSolver`, which solves the levels of an `HQPBlock` one after the other
-  with an inner Solver taken from a `BlockSolverConfig`
+- `HQPSolver`, which solves the levels of an `HQPBlock` one after the other,
+  each with an inner Solver of its own taken from the same
+  `BlockSolverConfig`, so that an inner Solver that re-optimizes (e.g.,
+  DAQP or qpOASES) starts each level from its solution of the same level in
+  the previous `compute()`, e.g., the previous step of a Model Predictive
+  Control; `get_elapsed_iterations()` sums their iterations
 - `tools/npz2nc4.py`, from `.npz` to the netCDF format of `HQPBlock`
 - the unit test of `HQPBlock`, which needs the core library only: the
   methods of the Block and the Modification they issue, the netCDF format

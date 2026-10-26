@@ -28,14 +28,16 @@ the slacks of the level just solved and changes some coefficients of the
 Modification of the same Block, a Solver that can re-optimize (typically an
 active-set one) starts each solve from the previous solution.
 
-`HQPSolver` solves the levels of an `HQPBlock` one after the other with an
-inner Solver attached to the same Block. The inner Solver is any Solver of
-convex QPs with linear constraints (in practice a :MILPSolver, such as
-`DAQPMILPSolver` or `MOSEKMILPSolver`), taken from the factory by its name
-in the `BlockSolverConfig` given by the parameter `str_HQP_BSCfg`. With
-`int_HQP_Prox` the center of the regularization follows the solution of the
+`HQPSolver` solves the levels of an `HQPBlock` one after the other, each
+with an inner Solver of its own attached to the same Block, so that the
+inner Solver of a level starts from its solution of the same level in the
+previous step. The inner Solver is any Solver of convex QPs with linear
+constraints (in practice a :MILPSolver, such as `DAQPMILPSolver` or
+`MOSEKMILPSolver`), taken from the factory by its name in the
+`BlockSolverConfig` given by the parameter `strInnerBSC`. With
+`intProxCenter` the center of the regularization follows the solution of the
 previous level, and each level is then the problem of the null-space
-approach with a regularized step. With `int_HQP_RelaxLower` (the default)
+approach with a regularized step. With `intRelaxLower` (the default)
 the rows of the levels below the current one are relaxed and their slacks
 fixed to 0; this keeps the Hessian positive definite if `eps > 0`, while the
 rows left in the model with free slacks make it singular, which the inner
