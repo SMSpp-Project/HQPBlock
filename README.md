@@ -50,17 +50,18 @@ switching scenario of a Python implementation of the centralized
 hierarchical Model Predictive Control of a team of robots, with the solution
 of each level of that implementation.
 
-The tester `test/test.cpp` compares each `HQPSolver` of `test/BSPar.txt`
-with an independent implementation of the null-space approach, level by
-level. The inner Solvers are DAQP and MOSEK, with the rows of the lower
-levels relaxed or not and the center of the regularization moving or not.
-The hierarchies are random ones and those that may be degenerate: a level of
-equalities only, one of inequalities only, an empty one, an inequality task
-that cannot be satisfied at its level, one already satisfied, dependent rows
-and weights. The tester also checks a change of all the data between two
-solves (against a new Block solved from scratch) and the netCDF format,
-while `test/test_radial.cpp` does the same on the instances of `data/nc4`,
-also reaching each step by Modification of the Block of the previous one.
+The unit test `test/test.cpp` needs the core library only and solves
+nothing: it checks the methods of the Block (the sizes of the levels, the
+abstract representation, the move from a level to the next one, the changes
+of the data and the Modification they issue), the netCDF format and the
+errors of the reader, on hierarchies with the degenerate parts of the format
+(levels with no equalities or no inequalities, empty levels, rows with no
+entries, weights different from 1). `HQPSolver`, whose inner Solver comes
+from another module, is tested by the suite
+[`HQPBlock`](https://gitlab.com/smspp/tests/-/tree/develop/HQPBlock) of the
+system tests of SMS++, which compares several inner Solvers and settings
+with an independent implementation of the null-space approach, on random
+and degenerate hierarchies and on the instances of `data/nc4`.
 
 
 ## Getting started
@@ -72,10 +73,10 @@ your system.
 
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
   requirements.
-- For the tests, [MILPSolver](https://gitlab.com/smspp/milpsolver), which
-  provides the inner Solver of `HQPSolver`; without it the testers check
-  only what needs no inner Solver. The instances of `data/nc4` are
-  downloaded by the tests from the GitLab Package Registry.
+- To use `HQPSolver`, a module providing its inner Solver, typically
+  [MILPSolver](https://gitlab.com/smspp/milpsolver). The instances of
+  `data/nc4` are downloaded from the GitLab Package Registry by the system
+  tests that read them.
 - For the tools, Python with numpy and netCDF4 (`tools/npz2nc4.py`).
 
 ### Build and install with CMake

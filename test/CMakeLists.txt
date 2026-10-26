@@ -29,24 +29,10 @@ else ()
     endif ()
 endif ()
 
-# ----- Inner Solver -------------------------------------------------------- #
-# The HQPSolver of the testers take their inner Solver from the factory, by
-# the names in the configurations of this directory: MILPSolver provides
-# them. In the umbrella it is a target (or will be, coming after this
-# module), alone it is looked for among the installed packages; without it
-# the testers check only what needs no inner Solver.
-if (NOT (TARGET ${modNamespace}::MILPSolver OR BUILD_MILPSolver))
-    find_package(MILPSolver QUIET)
-endif ()
-
 # ----- HQPBlock_unit_test -------------------------------------------------- #
 
 add_executable(${modName}_unit_test test.cpp)
 target_link_libraries(${modName}_unit_test PRIVATE ${modNamespace}::${modName})
-if (TARGET ${modNamespace}::MILPSolver OR BUILD_MILPSolver)
-    target_link_libraries(${modName}_unit_test PRIVATE
-                          ${modNamespace}::MILPSolver)
-endif ()
 
 if (WIN32 AND BUILD_SHARED_LIBS AND NOT DEFINED ENV{CONDA_BUILD})
     # On Windows with shared libraries enabled copies all runtime DLL
@@ -68,34 +54,5 @@ add_test(NAME ${modName}_unit_test
 # module with `ctest -L <module>` (see tests/cmake/TestLabels.cmake in the
 # umbrella for the system-tests counterpart).
 set_tests_properties(${modName}_unit_test PROPERTIES LABELS "${modName}")
-
-# ----- HQPBlock_radial_test ------------------------------------------------ #
-# The hierarchical QPs of data/nc4, extracted by a test that sets up the
-# fixture hqp_nc4_extracted [see the section Data of CMakeLists.txt].
-
-add_executable(${modName}_radial_test test_radial.cpp)
-target_link_libraries(${modName}_radial_test PRIVATE
-                      ${modNamespace}::${modName})
-if (TARGET ${modNamespace}::MILPSolver OR BUILD_MILPSolver)
-    target_link_libraries(${modName}_radial_test PRIVATE
-                          ${modNamespace}::MILPSolver)
-endif ()
-
-add_test(NAME ${modName}_radial_test
-         COMMAND ${modName}_radial_test ${PROJECT_SOURCE_DIR}/data/nc4
-         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-set_tests_properties(${modName}_radial_test PROPERTIES
-                     LABELS "${modName}" SKIP_RETURN_CODE 77
-                     FIXTURES_REQUIRED hqp_nc4_extracted)
-
-foreach (fmt ${DATA_FORMATS})
-    add_test(NAME ${modName}_extract_hqp_${fmt}
-             COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-                     --target extract_hqp_${fmt})
-    set_tests_properties(${modName}_extract_hqp_${fmt} PROPERTIES
-                         FIXTURES_SETUP hqp_${fmt}_extracted
-                         RESOURCE_LOCK hqp_data
-                         LABELS "${modName}")
-endforeach ()
 
 # --------------------------------------------------------------------------- #

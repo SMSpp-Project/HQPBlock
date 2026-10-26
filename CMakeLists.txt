@@ -189,10 +189,11 @@ endif ()
 # Model Predictive Control of 8 robots, with the solution of each level of
 # the code that generated them (nc4) [see tools/npz2nc4.py].
 #
-# The instances the tests read are, for each <fmt> of DATA_FORMATS, the
-# archive <fmt>.tgz in the GitLab Package Registry of the project
-# DATA_PROJECT, extracted into data/<fmt>. Nothing of this is built with the
-# module: extract_<DATA_PREFIX>_<fmt> downloads the archive (by building
+# The instances the system tests read [see the suite HQPBlock of the tests
+# of the umbrella] are, for each <fmt> of DATA_FORMATS, the archive <fmt>.tgz
+# in the GitLab Package Registry of the project DATA_PROJECT, extracted into
+# data/<fmt>. Nothing of this is built with the module:
+# extract_<DATA_PREFIX>_<fmt> downloads the archive (by building
 # download_<DATA_PREFIX>_<fmt>) and extracts it, and it is built when the
 # tests that read the instances are run, by a test that sets up the fixture
 # <DATA_PREFIX>_<fmt>_extracted they require.

@@ -165,7 +165,7 @@ class HQPSolver : public Solver
   *   HQPBlock is moved to the solution of the previous level (and to 0 at
   *   level 0), if 0 it is 0 at all the levels;
   *
-  * - int_HQP_RelaxLower [0]: if 0, the rows of the levels below the
+  * - int_HQP_RelaxLower [1]: if 0, the rows of the levels below the
   *   current one are enforced, their slacks free and out of the Objective;
   *   if 1, they are relaxed and their slacks fixed to 0 [see
   *   HQPBlock::reset_levels()]. */
@@ -291,20 +291,27 @@ class HQPSolver : public Solver
  [[nodiscard]] Solver * get_inner_Solver( void ) const { return( f_inner ); }
 
 /*----------------- METHODS FOR HANDLING THE PARAMETERS --------------------*/
+ /// returns the number of int parameters, those of Solver included
 
  [[nodiscard]] idx_type get_num_int_par( void ) const override {
   return( idx_type( intLastHQPSPar ) );
   }
 
+ /// returns the number of double parameters, those of Solver included
+
  [[nodiscard]] idx_type get_num_dbl_par( void ) const override {
   return( idx_type( dblLastHQPSPar ) );
   }
+
+ /// returns the number of string parameters, those of Solver included
 
  [[nodiscard]] idx_type get_num_str_par( void ) const override {
   return( idx_type( strLastHQPSPar ) );
   }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+ /// returns the default value of the int parameter par [see set_par()]
 
  [[nodiscard]] int get_dflt_int_par( idx_type par ) const override {
   if( par == int_HQP_Prox )
@@ -314,11 +321,15 @@ class HQPSolver : public Solver
   return( Solver::get_dflt_int_par( par ) );
   }
 
+ /// returns the default value of the double parameter par
+
  [[nodiscard]] double get_dflt_dbl_par( idx_type par ) const override {
   if( par == dbl_HQP_SlackTol )
    return( 0 );
   return( Solver::get_dflt_dbl_par( par ) );
   }
+
+ /// returns the default value of the string parameter par
 
  [[nodiscard]] const std::string & get_dflt_str_par( idx_type par )
   const override {
@@ -330,6 +341,8 @@ class HQPSolver : public Solver
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+ /// returns the current value of the int parameter par
+
  [[nodiscard]] int get_int_par( idx_type par ) const override {
   if( par == int_HQP_Prox )
    return( f_prox );
@@ -340,11 +353,15 @@ class HQPSolver : public Solver
   return( Solver::get_int_par( par ) );
   }
 
+ /// returns the current value of the double parameter par
+
  [[nodiscard]] double get_dbl_par( idx_type par ) const override {
   if( par == dbl_HQP_SlackTol )
    return( f_tol );
   return( Solver::get_dbl_par( par ) );
   }
+
+ /// returns the current value of the string parameter par
 
  [[nodiscard]] const std::string & get_str_par( idx_type par )
   const override {
@@ -355,6 +372,8 @@ class HQPSolver : public Solver
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+ /// returns the index of the int parameter with the given name
+
  [[nodiscard]] idx_type int_par_str2idx( const std::string & name )
   const override {
   if( name == "int_HQP_Prox" )
@@ -364,12 +383,16 @@ class HQPSolver : public Solver
   return( Solver::int_par_str2idx( name ) );
   }
 
+ /// returns the index of the double parameter with the given name
+
  [[nodiscard]] idx_type dbl_par_str2idx( const std::string & name )
   const override {
   if( name == "dbl_HQP_SlackTol" )
    return( dbl_HQP_SlackTol );
   return( Solver::dbl_par_str2idx( name ) );
   }
+
+ /// returns the index of the string parameter with the given name
 
  [[nodiscard]] idx_type str_par_str2idx( const std::string & name )
   const override {
@@ -380,6 +403,8 @@ class HQPSolver : public Solver
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+ /// returns the name of the int parameter with the given index
+
  [[nodiscard]] const std::string & int_par_idx2str( idx_type idx )
   const override {
   static const std::string pars[] = { "int_HQP_Prox" ,
@@ -389,6 +414,8 @@ class HQPSolver : public Solver
   return( Solver::int_par_idx2str( idx ) );
   }
 
+ /// returns the name of the double parameter with the given index
+
  [[nodiscard]] const std::string & dbl_par_idx2str( idx_type idx )
   const override {
   static const std::string par = "dbl_HQP_SlackTol";
@@ -396,6 +423,8 @@ class HQPSolver : public Solver
    return( par );
   return( Solver::dbl_par_idx2str( idx ) );
   }
+
+ /// returns the name of the string parameter with the given index
 
  [[nodiscard]] const std::string & str_par_idx2str( idx_type idx )
   const override {
@@ -411,7 +440,16 @@ class HQPSolver : public Solver
 
 /*-------------------------- PROTECTED METHODS -----------------------------*/
 
+ /// creates the inner Solver out of the BlockSolverConfig and attaches it
+ /** Creates, through the Solver factory, the first Solver of the
+  * BlockSolverConfig of str_HQP_BSCfg that is in the factory, configures it
+  * with its ComputeConfig and attaches it to the Block (without registering
+  * it); if none of them is in the factory there is no inner Solver. */
+
  void create_inner( void );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// detaches and deletes the inner Solver, if any
 
  void drop_inner( void );
 

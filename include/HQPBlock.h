@@ -577,7 +577,16 @@ class HQPBlock : public Block
 
 /*-------------------------- PROTECTED METHODS -----------------------------*/
 
+ /// deletes the abstract representation, keeping the data
+
  void guts_of_destructor( void );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// checks the data of load() and makes it the data of the HQPBlock
+ /** Checks the data of load() [see there], throwing std::invalid_argument
+  * if the sizes do not agree, deletes the abstract representation, if any,
+  * and makes the data that of the HQPBlock, whose levels are brought to the
+  * state of level 0; the abstract representation is not generated. */
 
  void guts_of_load( Index n , std::vector< SparseMatrix > && A ,
                     std::vector< Vec_double > && b ,
@@ -586,13 +595,37 @@ class HQPBlock : public Block
                     std::vector< Vec_double > && we ,
                     std::vector< Vec_double > && wi , double eps );
 
+ /// throws std::invalid_argument, naming method, if p is not a level
+
  void check_level( Index p , const char * method ) const;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// brings the rows of level p of one kind to the data
+ /** Brings the coefficients and the right-hand sides of the rows of level
+  * p, the equality ones if \p eq and the inequality ones otherwise, to the
+  * data of the HQPBlock, \p M (if not nullptr) becoming first the matrix of
+  * the level; only what changes is changed, by Modification according to
+  * \p issueMod. */
 
  void set_rows( bool eq , Index p , const SparseMatrix * M ,
                 ModParam issueMod );
 
+ /// brings the slacks and the rows of level p to the state s
+ /** Brings the slacks and the rows of level p to the state \p s [see
+  * level_state]: kFixed fixes the slacks at their values at the current x
+  * [see level_slacks()], \p tol being added to those of the inequality
+  * rows, kOff fixes them to 0 and relaxes the rows, kFree frees the slacks
+  * and enforces the rows; the changes are issued as Modification according
+  * to \p issueMod. */
+
  void set_level_state( Index p , level_state s , double tol ,
                        ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// puts the slacks of level p in the Objective (if in) or out of it
+ /** Gives the slacks of level p the quadratic coefficient 1 / 2 in the
+  * Objective if \p in, 0 otherwise, by Modification according to \p
+  * issueMod. */
 
  void set_level_in_objective( Index p , bool in , ModParam issueMod );
 
