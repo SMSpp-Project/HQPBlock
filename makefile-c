@@ -1,0 +1,53 @@
+##############################################################################
+################################ makefile-c ##################################
+##############################################################################
+#                                                                            #
+#   complete makefile of HQPBlock                                            #
+#                                                                            #
+#   The makefile defines internally all external libraries (comprised the    #
+#   SMS++ one) required by HQPBlock. Accordingly, all necessary              #
+#   OBJ, H, -I directives, external libraries + -L< libdirs > are added to   #
+#   the corresponding HQPBk* macros.                                         #
+#                                                                            #
+#   Input:  $(CC)        = compiler command                                  #
+#           $(SW)        = compiler options                                  #
+#           $(HQPBkSDR)  = the directory where HQPBlock source is            #
+#           $(HQPBkODR)  = the directory where the objects have to be put    #
+#                                                                            #
+#   Output: $(HQPBkOBJ)  = the final object(s) / library                     #
+#           $(HQPBkLIB)  = external libraries + -L< libdirs >                #
+#            $(HQPBkH)    = the .h files to include for HQPBlock             #
+#                $(HQPBkINC)  = the -I$( HQPBlock directory )                #
+#                                                                            #
+#                             Antonio Frangioni                              #
+#                         Dipartimento di Informatica                        #
+#                             Universita' di Pisa                            #
+#                                                                            #
+##############################################################################
+
+# define & include the necessary modules- - - - - - - - - - - - - - - - - - -
+# if a module is not used in the current configuration, just comment out the
+# corresponding include line
+# each module outputs some macros to be used here:
+# *OBJ is the final object/library
+# *H   is the list of all include files
+# *INC is the -I< include directories >
+
+# define input macros for SMS++ complete makefile, then include it
+SMS++SDR = $(HQPBkSDR)/../SMS++
+include $(SMS++SDR)/lib/makefile-c
+
+# include the makefile requiring all external modules in input
+include $(HQPBkSDR)/makefile
+
+# macros to be exported - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# append external -I directives to HQPBkINC, HQPBkOBJ and HQPBkH as defined
+# by the makefile, thus the := assignment has to be used (use GNU make)
+HQPBkOBJ := $(HQPBkOBJ) $(SMS++OBJ)
+HQPBkINC := $(HQPBkINC) $(SMS++INC)
+
+# external libraries for HQPBlock
+HQPBkLIB = $(SMS++LIB)
+
+############################ End of makefile #################################
