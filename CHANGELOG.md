@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Solvers get its log and, after an NBModification of the Block, are
   created anew
 - `tools/npz2nc4.py`, from `.npz` to the netCDF format of `HQPBlock`
+- `tools/ho_mpc_radial.py`, which writes as `.npz` the hierarchical QPs of
+  the centralized Model Predictive Control of the radial switching scenario
+  of the HO-MPC package, i.e., the instances of `data/nc4`
 - the unit test of `HQPBlock` and `HQPDistBlock`, which needs the core
   library only: the methods of the Blocks and the Modification they issue,
   the netCDF format and its degenerate cases, checked without solving

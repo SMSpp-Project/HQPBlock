@@ -69,10 +69,15 @@ that format. An
 `HQPDistBlock` is the owners of the columns (and, optionally, of the rows)
 together with the centralized `HQPBlock` in a group of its own (cf.
 `HQPDistBlock::deserialize()`). The instances of `data/nc4` are some steps
-of the radial
-switching scenario of a Python implementation of the centralized
-hierarchical Model Predictive Control of a team of robots, with the solution
-of each level of that implementation.
+of the radial switching scenario of the centralized hierarchical Model
+Predictive Control of a team of robots of the
+[HO-MPC package](https://github.com/ddebenedittis/hierarchical_optimization_mpc)
+(D. De Benedittis, M. Garabini, L. Pallottino, "Managing Conflicting Tasks
+in Heterogeneous Multi-Robot Systems Through Hierarchical Optimization",
+IEEE Robotics and Automation Letters 10(6):5305-5312, 2025), with the
+solution of each level of that implementation, written by
+`tools/ho_mpc_radial.py` with the package and converted by
+`tools/npz2nc4.py`.
 
 The unit test `test/test.cpp` needs the core library only and solves
 nothing: it checks the methods of the Block (the sizes of the levels, the
@@ -105,7 +110,8 @@ your system.
   [MILPSolver](https://gitlab.com/smspp/milpsolver). The instances of
   `data/nc4` are downloaded from the GitLab Package Registry by the system
   tests that read them.
-- For the tools, Python with numpy and netCDF4 (`tools/npz2nc4.py`).
+- For the tools, Python with numpy and netCDF4 (`tools/npz2nc4.py`), and
+  the HO-MPC package with its requirements (`tools/ho_mpc_radial.py`).
 
 ### Build and install with CMake
 
