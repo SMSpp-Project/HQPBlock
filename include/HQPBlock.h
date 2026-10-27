@@ -550,6 +550,20 @@ class HQPBlock : public HQPLevelBlock
   return( v_in );
   }
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the rows of the dynamic group "link"
+ /** Returns the std::list of the FRowConstraint of the dynamic Constraint
+  * group "link" of the HQPBlock, which is there (empty) as soon as the
+  * Constraint are, and which the HQPBlock never changes: it is for an
+  * ancestor that links the HQPBlock with Variable of its own, e.g., an
+  * HQPDistBlock, which adds rows to it with Block::add_dynamic_constraints()
+  * and relaxes and enforces them itself. The levels have nothing to do with
+  * them. */
+
+ [[nodiscard]] std::list< FRowConstraint > & get_link_rows( void ) {
+  return( v_link );
+  }
+
 /*--------------------- Methods for handling the levels --------------------*/
  /// returns the current level
  /** Returns the level whose problem \f$ (L_p) \f$ the abstract
@@ -698,8 +712,9 @@ class HQPBlock : public HQPLevelBlock
  /** Changes the center \f$ c \f$ of the regularization into \p c, whose
   * size must be \f$ n \f$ (or 0, meaning \f$ c = 0 \f$): the linear
   * coefficients \f$ - \varepsilon c \f$ of \f$ x \f$ in the Objective change
-  * by Modification according to \p issueMod. The constant \f$ \varepsilon
-  * \| c \|^2 / 2 \f$ is not added to the Objective. */
+  * by Modification according to \p issueMod, and so does the constant
+  * \f$ \varepsilon \sum_j r_j c_j^2 / 2 \f$ of the Objective, which is
+  * therefore exactly that of \f$ (L_p) \f$, never negative. */
 
  void set_center( const Vec_double & c ,
                   ModParam issueMod = eModBlck ) override;
@@ -755,6 +770,11 @@ class HQPBlock : public HQPLevelBlock
                     std::vector< Vec_double > && wi , double eps ,
                     Vec_double && rw );
 
+ /// the constant \f$ \varepsilon \sum_j r_j c_j^2 / 2 \f$ of the Objective
+
+ [[nodiscard]] double reg_constant( void ) const;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// the weight \f$ r_j \f$ of variable j in the regularization
 
  [[nodiscard]] double reg_weight( Index j ) const {
@@ -821,6 +841,7 @@ class HQPBlock : public HQPLevelBlock
 
  std::vector< FRowConstraint > v_eq;  ///< the equality rows
  std::vector< FRowConstraint > v_in;  ///< the inequality rows
+ std::list< FRowConstraint > v_link;  ///< the rows of the group "link"
 
  /// for each row, the columns of the active Variable of its LinearFunction
  /** For each row (the equality ones first, then the inequality ones), the

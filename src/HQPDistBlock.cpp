@@ -83,6 +83,22 @@ Index row_owner( const SparseMatrix & M , Eigen::Index h ,
  }
 
 /*--------------------------------------------------------------------------*/
+// true if the row has entries in the columns of more than one owner
+
+bool couples_row( const SparseMatrix & M , Eigen::Index h ,
+                  const Vec_Index & col_owner )
+{
+ Index first = Inf< Index >();
+ for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+  if( first == Inf< Index >() )
+   first = col_owner[ it.col() ];
+  else
+   if( col_owner[ it.col() ] != first )
+    return( true );
+ return( false );
+ }
+
+/*--------------------------------------------------------------------------*/
 // a copy of the data of an HQPBlock into another one
 
 void copy_data( const HQPBlock & from , HQPBlock & to )
@@ -227,6 +243,38 @@ void HQPDistBlock::serialize( netCDF::NcGroup & group ) const
  }  // end( HQPDistBlock::serialize )
 
 /*--------------------------------------------------------------------------*/
+
+void HQPDistBlock::set_structure( Configuration * strc )
+{
+ if( ( ! strc ) && f_BlockConfig )
+  strc = f_BlockConfig->f_structure_Configuration;
+
+ if( ! strc )  // nobody is choosing: the structure is left as it is
+  return;
+
+ auto ci = dynamic_cast< SimpleConfiguration< int > * >( strc );
+ if( ! ci )
+  throw( std::invalid_argument( "HQPDistBlock::set_structure: the "
+                                "structure of an HQPDistBlock is a "
+                                "SimpleConfiguration< int >" ) );
+ const int st = ci->value();
+ if( ( st != kConsensus ) && ( st != kBenders ) )
+  throw( std::invalid_argument( "HQPDistBlock::set_structure: unknown "
+                                "structure " + std::to_string( st ) ) );
+ if( st == f_struct )
+  return;
+ if( AR )
+  throw( std::logic_error( "HQPDistBlock::set_structure: the abstract "
+                           "representation is there already" ) );
+
+ f_struct = st;
+ if( f_R ) {  // the data is there: the sub-Blocks are built anew
+  guts_of_destructor();
+  build();
+  }
+ }  // end( HQPDistBlock::set_structure )
+
+/*--------------------------------------------------------------------------*/
 /*-------------------- Methods for the abstract representation -------------*/
 /*--------------------------------------------------------------------------*/
 
@@ -237,6 +285,23 @@ void HQPDistBlock::generate_abstract_variables( Configuration * stvv )
 
  for( auto b : v_Block )
   b->generate_abstract_variables();
+
+ if( f_struct == kBenders ) {
+  v_t = std::vector< ColVariable >( v_piece.size() );
+  v_s = std::vector< ColVariable >( v_cpl.size() );
+  for( Index c = 0 ; c < v_cpl.size() ; ++c ) {
+   if( ! v_cpl[ c ].first )
+    v_s[ c ].set_type( ColVariable::kNonNegative , eNoMod );
+   // the slacks of the levels that are not free are fixed to 0 for now
+   if( v_cpl_state[ level_of( v_cpl[ c ].first , v_cpl[ c ].second ) ] !=
+       HQPBlock::kFree ) {
+    v_s[ c ].set_value( 0 );
+    v_s[ c ].is_fixed( true , eNoMod );
+    }
+   }
+  add_static_variable( v_t , "t" );
+  add_static_variable( v_s , "s" );
+  }
 
  AR |= HasVar;
 
@@ -257,6 +322,65 @@ void HQPDistBlock::generate_abstract_constraints( Configuration * stcc )
   return( const_cast< ColVariable * >(
                    & get_robot( r )->get_x()[ v_pos[ r ][ j ] ] ) );
   };
+
+ if( f_struct == kBenders ) {
+  // the link rows, a list for each owner, spliced into its group "link"
+  std::vector< std::list< FRowConstraint > > links( f_R );
+  v_link.assign( v_piece.size() , {} );
+  for( Index k = 0 ; k < v_piece.size() ; ++k ) {
+   const auto [ c , r ] = v_piece[ k ];
+   const auto [ eq , i ] = v_cpl[ c ];
+   const auto & M = eq ? f_central.get_A( level_of( eq , i ) )
+                       : f_central.get_C( level_of( eq , i ) );
+   const Index h = i - ( eq ? f_central.get_eq_start( level_of( eq , i ) )
+                            : f_central.get_ineq_start( level_of( eq , i ) ) );
+   LinearFunction::v_coeff_pair cf;
+   for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+    if( v_col_owner[ it.col() ] == r )
+     cf.emplace_back( var( r , it.col() ) , it.value() );
+   cf.emplace_back( & v_t[ k ] , -1.0 );
+   links[ r ].emplace_back();
+   auto & row = links[ r ].back();
+   row.set_function( new LinearFunction( std::move( cf ) ) , eNoMod );
+   if( eq )
+    row.set_both( 0 , eNoMod );
+   else {
+    row.set_lhs( -Inf< double >() , eNoMod );
+    row.set_rhs( 0 , eNoMod );
+    }
+   v_link[ k ] = std::prev( links[ r ].end() );
+   }
+  for( Index r = 0 ; r < f_R ; ++r ) {
+   auto rb = get_robot( r );
+   rb->add_dynamic_constraints( rb->get_link_rows() , links[ r ] , eNoMod );
+   }
+
+  // the coupling rows
+  v_cplr = std::vector< FRowConstraint >( v_cpl.size() );
+  for( Index c = 0 ; c < v_cpl.size() ; ++c ) {
+   const auto [ eq , i ] = v_cpl[ c ];
+   const double wg = eq ? f_central.get_we()[ i ] : f_central.get_wi()[ i ];
+   LinearFunction::v_coeff_pair cf;
+   cf.emplace_back( & v_s[ c ] , -1.0 );
+   for( Index k = v_cpl_t[ c ] ; k < v_cpl_t[ c + 1 ] ; ++k )
+    cf.emplace_back( & v_t[ k ] , wg );
+   auto & row = v_cplr[ c ];
+   row.set_function( new LinearFunction( std::move( cf ) ) , eNoMod );
+   if( eq )
+    row.set_both( wg * f_central.get_b()[ i ] , eNoMod );
+   else {
+    row.set_lhs( -Inf< double >() , eNoMod );
+    row.set_rhs( wg * f_central.get_d()[ i ] , eNoMod );
+    }
+   if( v_cpl_state[ level_of( eq , i ) ] == HQPBlock::kOff )
+    row.relax( true , eNoMod );
+   }
+  add_static_constraint( v_cplr , "coupling" );
+
+  AR |= HasCns;
+  relax_links( eNoMod );
+  return;
+  }
 
  v_cons = std::vector< FRowConstraint >( v_copy.size() );
  for( Index k = 0 ; k < v_copy.size() ; ++k ) {
@@ -283,7 +407,17 @@ void HQPDistBlock::generate_objective( Configuration * objc )
  for( auto b : v_Block )
   b->generate_objective();
 
- f_obj.set_function( new LinearFunction() , eNoMod );
+ if( f_struct == kBenders ) {
+  generate_abstract_variables();
+  DQuadFunction::v_coeff_triple tr;
+  for( Index c = 0 ; c < v_cpl.size() ; ++c )
+   tr.emplace_back( & v_s[ c ] , 0.0 ,
+                    v_cpl_obj[ level_of( v_cpl[ c ].first ,
+                                         v_cpl[ c ].second ) ] ? 0.5 : 0.0 );
+  f_obj.set_function( new DQuadFunction( std::move( tr ) ) , eNoMod );
+  }
+ else
+  f_obj.set_function( new LinearFunction() , eNoMod );
  f_obj.set_sense( Objective::eMin , eNoMod );
  set_objective( & f_obj , eNoMod );
 
@@ -301,6 +435,17 @@ void HQPDistBlock::reset_levels( bool relax_lower , ModParam issueMod )
   get_robot( r )->reset_levels( relax_lower , issueMod );
  f_level = 0;
  v_delta.clear();
+
+ if( f_struct == kBenders ) {
+  for( Index q = 0 ; q < get_num_levels() ; ++q ) {
+   const bool first = ( q == 0 );
+   set_coupling_state( q , ( first || ! relax_lower ) ? HQPBlock::kFree
+                                                      : HQPBlock::kOff ,
+                       0 , issueMod );
+   set_coupling_in_objective( q , first || relax_lower , issueMod );
+   }
+  relax_links( issueMod );
+  }
  }
 
 /*--------------------------------------------------------------------------*/
@@ -338,7 +483,16 @@ void HQPDistBlock::next_level( double tol , ModParam issueMod )
 
  for( Index r = 0 ; r < f_R ; ++r )
   get_robot( r )->next_level( tol , issueMod );
+
+ // the coupling rows of kBenders are moved as an HQPBlock moves its own
+ if( f_struct == kBenders ) {
+  set_coupling_state( f_level , HQPBlock::kFixed , tol , issueMod );
+  set_coupling_state( f_level + 1 , HQPBlock::kFree , 0 , issueMod );
+  set_coupling_in_objective( f_level + 1 , true , issueMod );
+  }
  ++f_level;
+ if( f_struct == kBenders )
+  relax_links( issueMod );
 
  }  // end( HQPDistBlock::next_level )
 
@@ -443,9 +597,15 @@ void HQPDistBlock::set_slack_values( Index p , const Vec_double & v ,
  const auto e = f_central.get_eq_start( p );
  const auto i = f_central.get_ineq_start( p );
  for( Index h = 0 ; h < v.size() ; ++h )
-  vr[ v_eq_owner[ e + h ] ][ v_eq_pos[ e + h ] ] = v[ h ];
+  if( v_eq_cpl[ e + h ] < Inf< Index >() )
+   v_s[ v_eq_cpl[ e + h ] ].set_value( v[ h ] );
+  else
+   vr[ v_eq_owner[ e + h ] ][ v_eq_pos[ e + h ] ] = v[ h ];
  for( Index h = 0 ; h < w.size() ; ++h )
-  wr[ v_in_owner[ i + h ] ][ v_in_pos[ i + h ] ] = w[ h ];
+  if( v_in_cpl[ i + h ] < Inf< Index >() )
+   v_s[ v_in_cpl[ i + h ] ].set_value( w[ h ] );
+  else
+   wr[ v_in_owner[ i + h ] ][ v_in_pos[ i + h ] ] = w[ h ];
  for( Index r = 0 ; r < f_R ; ++r )
   get_robot( r )->set_slack_values( p , vr[ r ] , wr[ r ] );
 
@@ -523,8 +683,12 @@ Solution * HQPDistBlock::get_Solution( Configuration * solc , bool emptys )
 
 void HQPDistBlock::print( std::ostream & output , char vlvl ) const
 {
- output << "HQPDistBlock with " << f_R << " sub-Blocks and "
-        << v_copy.size() << " copies of variables" << std::endl;
+ if( f_struct == kBenders )
+  output << "HQPDistBlock with " << f_R << " sub-Blocks and "
+         << v_cpl.size() << " coupling rows" << std::endl;
+ else
+  output << "HQPDistBlock with " << f_R << " sub-Blocks and "
+         << v_copy.size() << " copies of variables" << std::endl;
  for( Index r = 0 ; r < f_R ; ++r ) {
   const auto rb = get_robot( r );
   Index me = 0 , mi = 0;
@@ -546,18 +710,27 @@ void HQPDistBlock::print( std::ostream & output , char vlvl ) const
 
 void HQPDistBlock::guts_of_destructor( void )
 {
- // the consensus rows point to the Variable of the sub-Blocks
+ // the consensus rows point to the Variable of the sub-Blocks, and the
+ // link rows of these to the t: the sub-Blocks go before the t
  for( auto & row : v_cons )
+  row.clear();
+ for( auto & row : v_cplr )
   row.clear();
  f_obj.clear();
 
  reset_static_constraints();
  reset_objective();
  v_cons.clear();
+ v_cplr.clear();
 
  for( auto b : v_Block )
   delete b;
  v_Block.clear();
+
+ reset_static_variables();
+ v_link.clear();
+ v_t.clear();
+ v_s.clear();
 
  AR = 0;
  }
@@ -606,6 +779,7 @@ void HQPDistBlock::build( void )
                                  " rows" ) );
   if( ! given )
    owner.assign( m , 0 );
+  ( eq ? v_eq_cpl : v_in_cpl ).assign( m , Inf< Index >() );
   for( Index p = 0 ; p < P ; ++p ) {
    const auto & M = eq ? f_central.get_A( p ) : f_central.get_C( p );
    const Index first = eq ? f_central.get_eq_start( p )
@@ -626,12 +800,50 @@ void HQPDistBlock::build( void )
       throw( std::invalid_argument( "HQPDistBlock::build: the owner of a "
                                     "row owns none of its columns" ) );
      }
+    // with kBenders a coupling row is in the HQPDistBlock, and asks for
+    // no copy
+    auto & cpl = ( eq ? v_eq_cpl : v_in_cpl )[ first + h ];
+    cpl = Inf< Index >();
+    if( ( f_struct == kBenders ) && couples_row( M , h , v_col_owner ) ) {
+     cpl = 0;
+     continue;
+     }
     for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
      if( v_pos[ r ][ it.col() ] < 0 )
       v_pos[ r ][ it.col() ] = 0;
     }
    }
   }
+
+ // the coupling rows of kBenders, the equality ones first, and their t,
+ // one for each owner with entries in the row, in increasing order
+ v_cpl.clear();
+ v_piece.clear();
+ v_cpl_t.assign( 1 , 0 );
+ for( int k = 0 ; k < 2 ; ++k ) {
+  const bool eq = ( k == 0 );
+  auto & cpl = eq ? v_eq_cpl : v_in_cpl;
+  for( Index i = 0 ; i < cpl.size() ; ++i ) {
+   if( cpl[ i ] == Inf< Index >() )
+    continue;
+   cpl[ i ] = v_cpl.size();
+   const Index p = level_of( eq , i );
+   const auto & M = eq ? f_central.get_A( p ) : f_central.get_C( p );
+   const Index h = i - ( eq ? f_central.get_eq_start( p )
+                            : f_central.get_ineq_start( p ) );
+   std::vector< bool > in( f_R , false );
+   for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+    in[ v_col_owner[ it.col() ] ] = true;
+   for( Index r = 0 ; r < f_R ; ++r )
+    if( in[ r ] )
+     v_piece.emplace_back( v_cpl.size() , r );
+   v_cpl.emplace_back( eq , i );
+   v_cpl_t.push_back( v_piece.size() );
+   }
+  }
+ v_cpl_state.assign( P , char( HQPBlock::kFree ) );
+ v_cpl_obj.assign( P , 0 );
+ v_cpl_obj[ 0 ] = 1;
 
  // the columns of each owner: its own ones, then its copies
  v_cols.assign( f_R , {} );
@@ -657,6 +869,7 @@ void HQPDistBlock::build( void )
   const bool eq = ( k == 0 );
   const auto & owner = eq ? v_eq_owner : v_in_owner;
   auto & pos = eq ? v_eq_pos : v_in_pos;
+  const auto & cpl = eq ? v_eq_cpl : v_in_cpl;
   pos.assign( owner.size() , 0 );
   for( Index p = 0 ; p < P ; ++p ) {
    Vec_Index cnt( f_R , 0 );
@@ -665,7 +878,8 @@ void HQPDistBlock::build( void )
    const Index m = eq ? f_central.get_num_eq_rows( p )
                       : f_central.get_num_ineq_rows( p );
    for( Index i = first ; i < first + m ; ++i )
-    pos[ i ] = cnt[ owner[ i ] ]++;
+    if( cpl[ i ] == Inf< Index >() )
+     pos[ i ] = cnt[ owner[ i ] ]++;
    }
   }
 
@@ -703,6 +917,7 @@ bool HQPDistBlock::robot_rows( Index r , bool eq , Index p ,
 {
  const auto & Mc = eq ? f_central.get_A( p ) : f_central.get_C( p );
  const auto & owner = eq ? v_eq_owner : v_in_owner;
+ const auto & cpl = eq ? v_eq_cpl : v_in_cpl;
  const auto & rc = eq ? f_central.get_b() : f_central.get_d();
  const auto & wc = eq ? f_central.get_we() : f_central.get_wi();
  const Index first = eq ? f_central.get_eq_start( p )
@@ -714,7 +929,7 @@ bool HQPDistBlock::robot_rows( Index r , bool eq , Index p ,
  bool ok = true;
  for( Eigen::Index h = 0 ; h < Mc.rows() ; ++h ) {
   const Index i = first + h;
-  if( owner[ i ] != r )
+  if( ( owner[ i ] != r ) || ( cpl[ i ] < Inf< Index >() ) )
    continue;
   for( SparseMatrix::InnerIterator it( Mc , h ) ; it ; ++it ) {
    const int k = v_pos[ r ][ it.col() ];
@@ -742,6 +957,50 @@ void HQPDistBlock::update_rows( bool eq , Index p , ModParam issueMod )
  bool ok = true;
  for( Index r = 0 ; r < f_R ; ++r )
   ok = robot_rows( r , eq , p , M[ r ] , rhs[ r ] , wgh[ r ] ) && ok;
+
+ // with kBenders, the coupling rows of the level whose parts are in the
+ // same columns of the same owners as before: their new coefficients
+ const auto & Mc = eq ? f_central.get_A( p ) : f_central.get_C( p );
+ const Index first = eq ? f_central.get_eq_start( p )
+                        : f_central.get_ineq_start( p );
+ std::vector< std::pair< Index , Vec_double > > piece_coef;
+ if( f_struct == kBenders )
+  for( Eigen::Index h = 0 ; ok && ( h < Mc.rows() ) ; ++h ) {
+   const Index c = ( eq ? v_eq_cpl : v_in_cpl )[ first + h ];
+   if( c == Inf< Index >() ) {
+    // a local row with entries of another owner now is a coupling one
+    ok = ! couples_row( Mc , h , v_col_owner );
+    continue;
+    }
+   for( Index k = v_cpl_t[ c ] ; ok && ( k < v_cpl_t[ c + 1 ] ) ; ++k ) {
+    const Index r = v_piece[ k ].second;
+    Vec_Index cols;
+    Vec_double cf;
+    for( SparseMatrix::InnerIterator it( Mc , h ) ; it ; ++it )
+     if( v_col_owner[ it.col() ] == r ) {
+      cols.push_back( it.col() );
+      cf.push_back( it.value() );
+      }
+    if( AR & HasCns ) {
+     const auto lf = static_cast< const LinearFunction * >(
+                                        v_link[ k ]->get_function() );
+     if( lf->get_num_active_var() != cols.size() + 1 )
+      ok = false;
+     for( Index a = 0 ; ok && ( a < cols.size() ) ; ++a )
+      if( lf->get_active_var( a ) !=
+          & get_robot( r )->get_x()[ v_pos[ r ][ cols[ a ] ] ] )
+       ok = false;
+     }
+    piece_coef.emplace_back( k , std::move( cf ) );
+    }
+   // and no other owner has entries in it
+   for( SparseMatrix::InnerIterator it( Mc , h ) ; ok && it ; ++it ) {
+    bool found = false;
+    for( Index k = v_cpl_t[ c ] ; k < v_cpl_t[ c + 1 ] ; ++k )
+     found = found || ( v_piece[ k ].second == v_col_owner[ it.col() ] );
+    ok = found;
+    }
+   }
 
  if( ! ok ) {  // a column that a sub-Block has not got: all anew
   // the NBModification comes first, so that a Solver that drops what it
@@ -773,6 +1032,52 @@ void HQPDistBlock::update_rows( bool eq , Index p , ModParam issueMod )
    rb->set_d( p , rhs[ r ] , issueMod );
    }
   }
+
+ if( ( f_struct != kBenders ) || ( ! ( AR & HasCns ) ) )
+  return;
+
+ // the parts of the coupling rows, and the rows themselves
+ for( auto & [ k , cf ] : piece_coef ) {
+  auto lf = static_cast< LinearFunction * >( v_link[ k ]->get_function() );
+  Vec_double chg;
+  LinearFunction::Subset nms;
+  for( Index a = 0 ; a < cf.size() ; ++a )
+   if( lf->get_coefficient( a ) != cf[ a ] ) {
+    chg.push_back( cf[ a ] );
+    nms.push_back( a );
+    }
+  if( ! nms.empty() )
+   lf->modify_coefficients( std::move( chg ) , std::move( nms ) , true ,
+                            issueMod );
+  }
+ for( Eigen::Index h = 0 ; h < Mc.rows() ; ++h ) {
+  const Index i = first + h;
+  const Index c = ( eq ? v_eq_cpl : v_in_cpl )[ i ];
+  if( c == Inf< Index >() )
+   continue;
+  const double wg = eq ? f_central.get_we()[ i ] : f_central.get_wi()[ i ];
+  auto & row = v_cplr[ c ];
+  auto lf = static_cast< LinearFunction * >( row.get_function() );
+  Vec_double chg;
+  LinearFunction::Subset nms;
+  for( Index a = 1 ; a < lf->get_num_active_var() ; ++a )
+   if( lf->get_coefficient( a ) != wg ) {
+    chg.push_back( wg );
+    nms.push_back( a );
+    }
+  if( ! nms.empty() )
+   lf->modify_coefficients( std::move( chg ) , std::move( nms ) , true ,
+                            issueMod );
+  const double side = wg * ( eq ? f_central.get_b()[ i ]
+                                : f_central.get_d()[ i ] );
+  if( eq ) {
+   if( row.get_rhs() != side )
+    row.set_both( side , issueMod );
+   }
+  else
+   if( row.get_rhs() != side )
+    row.set_rhs( side , issueMod );
+  }
  }  // end( HQPDistBlock::update_rows )
 
 /*--------------------------------------------------------------------------*/
@@ -785,6 +1090,93 @@ void HQPDistBlock::regenerate( void )
   generate_abstract_constraints();
   generate_objective();
   add_Modification( std::make_shared< NBModification >( this ) );
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+
+Block::Index HQPDistBlock::level_of( bool eq , Index i ) const
+{
+ Index p = 0;
+ while( i >= ( eq ? f_central.get_eq_start( p + 1 )
+                  : f_central.get_ineq_start( p + 1 ) ) )
+  ++p;
+ return( p );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPDistBlock::set_coupling_state( Index p , HQPBlock::level_state st ,
+                                       double tol , ModParam issueMod )
+{
+ if( ( v_cpl_state[ p ] == st ) && ( st != HQPBlock::kFixed ) )
+  return;
+
+ if( AR & HasVar ) {
+  Vec_double v , w;
+  if( st == HQPBlock::kFixed )
+   level_slacks( p , v , w );
+  for( Index c = 0 ; c < v_cpl.size() ; ++c ) {
+   const auto [ eq , i ] = v_cpl[ c ];
+   if( level_of( eq , i ) != p )
+    continue;
+   auto & var = v_s[ c ];
+   if( st == HQPBlock::kFree ) {
+    if( var.is_fixed() )
+     var.is_fixed( false , issueMod );
+    }
+   else {
+    double val = 0;
+    if( st == HQPBlock::kFixed )
+     val = eq ? v[ i - f_central.get_eq_start( p ) ]
+              : w[ i - f_central.get_ineq_start( p ) ] + tol;
+    if( var.is_fixed() )
+     var.is_fixed( false , issueMod );
+    var.set_value( val );
+    var.is_fixed( true , issueMod );
+    }
+   if( AR & HasCns ) {
+    const bool relax = ( st == HQPBlock::kOff );
+    if( v_cplr[ c ].is_relaxed() != relax )
+     v_cplr[ c ].relax( relax , issueMod );
+    }
+   }
+  }
+
+ v_cpl_state[ p ] = char( st );
+
+ }  // end( HQPDistBlock::set_coupling_state )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPDistBlock::set_coupling_in_objective( Index p , bool in ,
+                                              ModParam issueMod )
+{
+ if( bool( v_cpl_obj[ p ] ) == in )
+  return;
+
+ v_cpl_obj[ p ] = in;
+ if( ! ( AR & HasObj ) )
+  return;
+
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ for( Index c = 0 ; c < v_cpl.size() ; ++c )
+  if( level_of( v_cpl[ c ].first , v_cpl[ c ].second ) == p )
+   f->modify_term( c , 0.0 , in ? 0.5 : 0.0 , issueMod );
+
+ }  // end( HQPDistBlock::set_coupling_in_objective )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPDistBlock::relax_links( ModParam issueMod )
+{
+ if( ! ( AR & HasCns ) )
+  return;
+ for( Index k = 0 ; k < v_piece.size() ; ++k ) {
+  const auto [ eq , i ] = v_cpl[ v_piece[ k ].first ];
+  const bool relax = ( level_of( eq , i ) > f_level );
+  if( v_link[ k ]->is_relaxed() != relax )
+   v_link[ k ]->relax( relax , issueMod );
   }
  }
 

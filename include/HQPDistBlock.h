@@ -105,10 +105,40 @@ namespace SMSpp_di_unipi_it
  * owners is feasible for all of them, and finally moves each sub-Block to
  * the next level [see next_level()].
  *
+ * This is the structure kConsensus, the one of a Lagrangian decomposition.
+ * The other one, kBenders, is that of a Benders decomposition [see
+ * set_structure()]: the sub-Block of an owner has only the columns it owns
+ * and the rows all of whose entries are in them (the local rows), while each
+ * coupling row h, of level q, is in the HQPDistBlock, as
+ *
+ * \f[
+ *   W_h \big( \textstyle\sum_r t_{hr} \big) - s_h \leq W_h d_h
+ *   \qquad ( \, = W_h b_h \mbox{ for an equality row} \, ) \;\;,
+ * \f]
+ *
+ * with its slack \f$ s_h \f$, a ColVariable of the HQPDistBlock, and one
+ * ColVariable \f$ t_{hr} \f$ for each owner r with entries in the row,
+ * which bounds the part \f$ a_{hr} x_r \f$ of the row in the columns of r
+ * by the row \f$ a_{hr} x_r - t_{hr} \leq 0 \f$ (\f$ = 0 \f$ for an
+ * equality row) in the group "link" of the sub-Block of r [see
+ * HQPBlock::get_link_rows()]. With \f$ t_{hr} = a_{hr} x_r \f$ these are the
+ * coupling rows of the centralized hierarchy, hence the problem of each level
+ * is again exactly that of the centralized one. The t and the s are the
+ * complicating Variable of a Benders decomposition, e.g., by a
+ * BendersDecompositionSolver, and the problem of each owner at given t is a
+ * convex QP; that of an owner with no coupling row depends on no t, which a
+ * Benders decomposition may not accept. The HQPDistBlock moves the slacks of
+ * its coupling rows from a level to the next one as an HQPBlock does with
+ * its own [see HQPBlock::next_level()], the slacks of a level being fixed at
+ * their values at the x of the owners, and it relaxes the link rows of a
+ * coupling row of level q as long as the current level is above q, where
+ * the row constrains nothing.
+ *
  * The data can be changed with the methods of the class [see set_b() and
  * the others], which change those of the sub-Blocks by Modification; a
  * change of the pattern of a row that brings in a column its owner does not
- * have builds the sub-Blocks anew, with an NBModification. */
+ * have (with kBenders, any change of the pattern of a coupling row) builds
+ * the sub-Blocks anew, with an NBModification. */
 
 class HQPDistBlock : public HQPLevelBlock
 {
@@ -123,6 +153,12 @@ class HQPDistBlock : public HQPLevelBlock
 
  using Vec_Index = std::vector< Index >;  ///< a vector of Index
 
+ /// the decompositions the hierarchy can be given the structure of
+ enum structure_type {
+  kConsensus = 0 ,  ///< copies in the sub-Blocks, consensus rows in the root
+  kBenders = 1      ///< coupling rows in the root, their parts in sub-Blocks
+  };
+
 /*------------------------------ CONSTRUCTOR -------------------------------*/
  /// constructor of HQPDistBlock, taking a pointer to the father Block
  /** Constructor of HQPDistBlock. It accepts a pointer to the father Block
@@ -131,8 +167,8 @@ class HQPDistBlock : public HQPLevelBlock
   * until load() or deserialize() is called. */
 
  explicit HQPDistBlock( Block * father = nullptr )
-  : HQPLevelBlock( father ) , f_R( 0 ) , f_given_eq( false ) ,
-    f_given_in( false ) , f_level( 0 ) , AR( 0 ) {}
+  : HQPLevelBlock( father ) , f_struct( kConsensus ) , f_R( 0 ) ,
+    f_given_eq( false ) , f_given_in( false ) , f_level( 0 ) , AR( 0 ) {}
 
 /*------------------------------ DESTRUCTOR --------------------------------*/
  /// destructor of HQPDistBlock: deletes the sub-Blocks
@@ -187,29 +223,52 @@ class HQPDistBlock : public HQPLevelBlock
                            "netCDF one" ) );
   }
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// sets the structure: kConsensus or kBenders
+ /** Sets the structure of the HQPDistBlock [see structure_type and the
+  * general notes] out of \p strc or, if it is nullptr, of the
+  * f_structure_Configuration of the BlockConfig, which must be a
+  * SimpleConfiguration< int > with value kConsensus or kBenders; if there is
+  * none, the structure is left as it is (kConsensus at first). The
+  * structure can be changed as long as the abstract representation is not
+  * there, the sub-Blocks being built anew; after that, exception is
+  * thrown. */
+
+ void set_structure( Configuration * strc = nullptr ) override;
+
 /*---------------------- Methods for handling Variable ---------------------*/
- /// generates the ColVariable of the sub-Blocks; the HQPDistBlock has none
+ /// generates the ColVariable of the sub-Blocks, and those of kBenders
+ /** Generates the ColVariable of the sub-Blocks; with kBenders also those
+  * of the HQPDistBlock, the \f$ t \f$ (free, named "t", those of each
+  * coupling row one after the other, in the order of the owners) and the
+  * slacks \f$ s \f$ of the coupling rows (named "s", the equality ones free
+  * and the inequality ones non-negative, in the order of the rows, the
+  * equality ones first). With kConsensus the HQPDistBlock has none. */
 
  void generate_abstract_variables( Configuration * stvv = nullptr )
   override;
 
 /*--------------------- Methods for handling Constraint --------------------*/
- /// generates the consensus rows, after the Constraint of the sub-Blocks
- /** Generates the Constraint of the sub-Blocks and the static
-  * FRowConstraint of the consensus rows (named "consensus"), one for each
-  * owner r and each column j in \f$ \mathcal{C}_r \f$, in this order, each
-  * with a LinearFunction whose active Variable are the copy \f$ x^{(r)}_j
-  * \f$ (coefficient 1) and the \f$ x_j \f$ of the owner of j (coefficient
-  * -1), and both sides 0. */
+ /// generates the consensus or the coupling rows, after those of sub-Blocks
+ /** Generates the Constraint of the sub-Blocks and, with kConsensus, the
+  * static FRowConstraint of the consensus rows (named "consensus"), one for
+  * each owner r and each column j in \f$ \mathcal{C}_r \f$, in this order,
+  * each with a LinearFunction whose active Variable are the copy \f$
+  * x^{(r)}_j \f$ (coefficient 1) and the \f$ x_j \f$ of the owner of j
+  * (coefficient -1), and both sides 0. With kBenders, those of the coupling
+  * rows (named "coupling", in the order of the s), and the link rows of each
+  * coupling row in the sub-Blocks of its owners [see the general notes]. */
 
  void generate_abstract_constraints( Configuration * stcc = nullptr )
   override;
 
 /*---------------------- Methods for handling Objective --------------------*/
- /// generates the Objective of the sub-Blocks and an empty one
+ /// generates the Objective of the sub-Blocks and that of the HQPDistBlock
  /** Generates the Objective of the sub-Blocks and that of the HQPDistBlock,
-  * a minimization FRealObjective with a LinearFunction with no active
-  * Variable. */
+  * a minimization FRealObjective: with kConsensus a LinearFunction with no
+  * active Variable, with kBenders a DQuadFunction with the slacks \f$ s \f$
+  * of the coupling rows, with coefficient \f$ 1 / 2 \f$ for those of the
+  * levels in the Objective and 0 for the others, as in an HQPBlock. */
 
  void generate_objective( Configuration * objc = nullptr ) override;
 
@@ -227,6 +286,17 @@ class HQPDistBlock : public HQPLevelBlock
  [[nodiscard]] const HQPBlock & get_central( void ) const {
   return( f_central );
   }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the structure, a structure_type
+
+ [[nodiscard]] int get_structure( void ) const { return( f_struct ); }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the coupling rows of kBenders, as ( equality , index ) pairs
+
+ [[nodiscard]] const std::vector< std::pair< bool , Index > > &
+  get_coupling_rows( void ) const { return( v_cpl ); }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number \f$ R \f$ of owners, i.e., of sub-Blocks
@@ -486,9 +556,37 @@ class HQPDistBlock : public HQPLevelBlock
 
  void regenerate( void );
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// brings the coupling rows of level p to the state s, with kBenders
+ /** As HQPBlock::set_level_state() does for its rows, for the coupling rows
+  * of level p in the HQPDistBlock: kFixed fixes their slacks at their values
+  * at the x of the owners (plus \p tol on the inequality ones), kOff fixes
+  * them to 0 and relaxes the rows, kFree frees the slacks and enforces the
+  * rows. */
+
+ void set_coupling_state( Index p , HQPBlock::level_state s , double tol ,
+                          ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// puts the slacks of the coupling rows of level p in the Objective or out
+
+ void set_coupling_in_objective( Index p , bool in , ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// relaxes the link rows of the coupling rows of the levels above f_level
+
+ void relax_links( ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// the level of a row of one kind of the centralized hierarchy
+
+ [[nodiscard]] Index level_of( bool eq , Index i ) const;
+
 /*--------------------------- PROTECTED FIELDS -----------------------------*/
 
  HQPBlock f_central;         ///< the centralized hierarchy (data only)
+
+ int f_struct;               ///< the structure, a structure_type
 
  Index f_R;                  ///< number of owners (sub-Blocks)
 
@@ -514,6 +612,29 @@ class HQPDistBlock : public HQPLevelBlock
  std::vector< std::pair< Index , Index > > v_copy;
 
  std::vector< FRowConstraint > v_cons;  ///< the consensus rows
+
+ /// the coupling rows of kBenders, ( equality , index among their kind )
+ std::vector< std::pair< bool , Index > > v_cpl;
+
+ /// the position of each row in v_cpl, or Inf< Index >() if it is local
+ Vec_Index v_eq_cpl;
+ Vec_Index v_in_cpl;                  ///< as v_eq_cpl, the inequality rows
+
+ /// for each t, the coupling row (its position in v_cpl) and the owner
+ std::vector< std::pair< Index , Index > > v_piece;
+
+ /// the first t of each coupling row, and v_piece.size() at the end
+ Vec_Index v_cpl_t;
+
+ std::vector< ColVariable > v_t;      ///< the t of kBenders
+ std::vector< ColVariable > v_s;      ///< the slacks of the coupling rows
+ std::vector< FRowConstraint > v_cplr;  ///< the coupling rows
+
+ /// for each t, the link row of its owner
+ std::vector< std::list< FRowConstraint >::iterator > v_link;
+
+ std::vector< char > v_cpl_state;     ///< the level_state of each level
+ std::vector< char > v_cpl_obj;       ///< slacks of each level in Objective
 
  FRealObjective f_obj;       ///< the empty Objective
 

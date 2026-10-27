@@ -48,8 +48,9 @@ so does `HQPDistBlock`.
 
 `HQPDistBlock` is the same hierarchy with its variables split among owners,
 e.g., the robots of a multi-robot Model Predictive Control, so that it can
-be solved by decomposition. Out of the centralized hierarchy and the owner
-of each column, each row gets an owner among those of its columns, and each
+be solved by decomposition, with one of two structures chosen by
+`set_structure()`. With `kConsensus`, the one of a Lagrangian decomposition,
+each row gets an owner among those of its columns, and each
 owner is a sub-Block, an `HQPBlock` with its own variables, a copy of each
 variable of another owner that appears in one of its rows, and its rows;
 the root has no variables, an empty `Objective` and the consensus rows that
@@ -59,7 +60,13 @@ each level is exactly that of the centralized hierarchy, which a Solver of
 the whole tree solves and a Lagrangian decomposition relaxes. Moving to the
 next level first gives the copies the values of their owners and fixes
 again the slacks of the levels already fixed at these values, so that every
-level is feasible whatever the accuracy of a decomposition.
+level is feasible whatever the accuracy of a decomposition. With `kBenders`,
+the one of a Benders decomposition, each owner has only its own variables
+and the rows all of whose entries are in them, while each coupling row is
+in the root, with its slack and a variable `t` for each owner with entries
+in it, which bounds the part of the row in the variables of that owner by
+a row of the dynamic group `link` of its sub-Block; again, the problem of
+each level is exactly that of the centralized hierarchy.
 
 An `HQPBlock` is serialized into and deserialized out of netCDF, with the
 rows in compressed sparse row form (cf. `HQPBlock::deserialize()`). The

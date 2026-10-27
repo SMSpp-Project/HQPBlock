@@ -54,7 +54,14 @@
  *   copies brought to their owners and the slacks fixed again by
  *   next_level(), a change of the data in the pattern (Modification of the
  *   sub-Block) and out of it (an NBModification first, then the sub-Blocks
- *   anew), the netCDF format and the errors of load().
+ *   anew), the netCDF format and the errors of load();
+ *
+ * - the same HQPDistBlock with the structure kBenders, read from
+ *   structure-benders.txt: the coupling rows and their slacks in the root,
+ *   the t and the link rows of each owner, their relaxation and the slacks
+ *   of the coupling rows along the levels, a change of the data in and out
+ *   of the pattern of a coupling row, and the structure refused once the
+ *   abstract representation is there.
  *
  * The HQPSolver, which needs an inner Solver from another module, is tested
  * by the suite HQPBlock of the system tests of SMS++.
@@ -281,7 +288,7 @@ static const DQuadFunction * objective( HQPBlock & block )
 /*--------------------------------------------------------------------------*/
 // the Objective is that of the current state of the levels: ( - eps c ,
 // eps / 2 ) on x, ( 0 , 1 / 2 ) on the slacks of the levels in it, given by
-// in[ p ], ( 0 , 0 ) on the others
+// in[ p ], ( 0 , 0 ) on the others, and the constant eps || c ||^2 / 2
 
 static bool objective_agrees( HQPBlock & block ,
                               const std::vector< bool > & in )
@@ -291,6 +298,11 @@ static bool objective_agrees( HQPBlock & block ,
  const double eps = block.get_regularization();
  const auto & c = block.get_center();
  if( f->get_num_active_var() != n + ne + block.get_ineq().size() )
+  return( false );
+ double c2 = 0;
+ for( auto cj : c )
+  c2 += cj * cj;
+ if( std::abs( f->get_constant_term() - eps * c2 / 2 ) > 1e-15 )
   return( false );
  for( Index j = 0 ; j < n ; ++j )
   if( ( f->get_active_var( j ) != & block.get_x()[ j ] ) ||
@@ -717,14 +729,15 @@ static void test_modifications( void )
  CHECK( count( s , f ).total() == 0 );
  CHECK( throws< std::invalid_argument >( [ & ]() {
   block.set_regularization( -1 ); } ) );
+ // the linear coefficients and the constant
  block.set_center( { 1 , 2 , 3 } );
  c = count( s , f );
- CHECK( ( c.obj == 1 ) && ( c.total() == 1 ) );
+ CHECK( ( c.obj == 2 ) && ( c.total() == 2 ) );
  CHECK( objective_agrees( block , { true , false , false , false } ) );
  CHECK( throws< std::invalid_argument >( [ & ]() {
   block.set_center( { 1 } ); } ) );
  block.set_center( {} );
- CHECK( count( s , f ).total() == 1 );
+ CHECK( count( s , f ).total() == 2 );
  CHECK( objective_agrees( block , { true , false , false , false } ) );
  // with no regularization the center changes nothing in the Objective
  block.set_regularization( 0 );
@@ -1299,6 +1312,148 @@ static void test_dist( void )
  std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
  }
 
+
+/*--------------------------------------------------------------------------*/
+// the coefficients of the active Variable of the LinearFunction of a row, in
+// the order given, all and only
+
+static bool row_is( const FRowConstraint & row ,
+                    const std::vector< std::pair< const ColVariable * ,
+                                                  double > > & cf ,
+                    double lhs , double rhs )
+{
+ auto lf = dynamic_cast< const LinearFunction * >( row.get_function() );
+ if( ( ! lf ) || ( lf->get_num_active_var() != cf.size() ) ||
+     ( row.get_lhs() != lhs ) || ( row.get_rhs() != rhs ) )
+  return( false );
+ for( Index a = 0 ; a < cf.size() ; ++a )
+  if( ( lf->get_active_var( a ) != cf[ a ].first ) ||
+      ( lf->get_coefficient( a ) != cf[ a ].second ) )
+   return( false );
+ return( true );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_dist_benders( void )
+{
+ std::cout << "HQPDistBlock with the structure kBenders" << std::endl;
+ const int e0 = errors;
+ const Data D = dist_data();
+ HQPBlock central;
+ load( central , D );
+ auto strc = Configuration::deserialize( "structure-benders.txt" );
+
+ HQPDistBlock db;
+ db.load( central , 2 , { 0 , 0 , 1 , 1 , 0 } );
+ db.set_structure( strc );
+ CHECK( db.get_structure() == HQPDistBlock::kBenders );
+ // x_3 + x_4 = 2 (level 2), x_1 + x_2 <= 0 and x_0 + 2 x_2 + 3 x_3 <= 1
+ // (level 1, weight 2) are the coupling rows, the equality one first
+ CHECK( ( db.get_coupling_rows() ==
+          std::vector< std::pair< bool , Index > >(
+           { { true , 3 } , { false , 0 } , { false , 1 } } ) ) );
+ CHECK( db.get_robot_columns( 0 ) ==
+        HQPDistBlock::Vec_Index( { 0 , 1 , 4 } ) );
+ CHECK( db.get_robot_columns( 1 ) == HQPDistBlock::Vec_Index( { 2 , 3 } ) );
+ CHECK( ( db.get_robot( 0 )->get_num_eq_rows( 0 ) == 2 ) &&
+        ( db.get_robot( 1 )->get_num_eq_rows( 0 ) == 1 ) &&
+        ( db.get_robot( 0 )->get_num_ineq_rows( 1 ) == 0 ) &&
+        ( db.get_robot( 1 )->get_num_ineq_rows( 1 ) == 0 ) &&
+        ( db.get_robot( 0 )->get_num_eq_rows( 2 ) == 0 ) );
+ CHECK( db.get_robot( 0 )->get_regularization_weights() ==
+        Vec( { 1 , 1 , 1 } ) );
+
+ db.generate_abstract_variables();
+ db.generate_abstract_constraints();
+ db.generate_objective();
+ const auto & t = * db.get_static_variable_v< ColVariable >( "t" );
+ const auto & sl = * db.get_static_variable_v< ColVariable >( "s" );
+ CHECK( ( t.size() == 6 ) && ( sl.size() == 3 ) );
+ CHECK( ( ! sl[ 0 ].is_positive() ) && sl[ 1 ].is_positive() );
+ const auto & cr = * db.get_static_constraint_v< FRowConstraint >(
+                                                               "coupling" );
+ const double Inf_d = Inf< double >();
+ CHECK( row_is( cr[ 0 ] , { { & sl[ 0 ] , -1 } , { & t[ 0 ] , 1 } ,
+                            { & t[ 1 ] , 1 } } , 2 , 2 ) );
+ CHECK( row_is( cr[ 2 ] , { { & sl[ 2 ] , -1 } , { & t[ 4 ] , 2 } ,
+                            { & t[ 5 ] , 2 } } , - Inf_d , 2 ) );
+ const auto & x0 = db.get_robot( 0 )->get_x();
+ const auto & x1 = db.get_robot( 1 )->get_x();
+ auto & l0 = db.get_robot( 0 )->get_link_rows();
+ auto & l1 = db.get_robot( 1 )->get_link_rows();
+ CHECK( ( l0.size() == 3 ) && ( l1.size() == 3 ) );
+ CHECK( row_is( l0.front() , { { & x0[ 2 ] , 1 } , { & t[ 0 ] , -1 } } ,
+                0 , 0 ) );
+ CHECK( row_is( l1.back() , { { & x1[ 0 ] , 2 } , { & x1[ 1 ] , 3 } ,
+                              { & t[ 5 ] , -1 } } , - Inf_d , 0 ) );
+ // at level 0 the link rows of levels 1 and 2 are relaxed
+ for( const auto & l : { & l0 , & l1 } )
+  for( const auto & row : *l )
+   CHECK( row.is_relaxed() );
+
+ // the levels: relaxed and fixed to 0 below, then the rows of level 1
+ auto s = new FakeSolver();
+ db.register_Solver( s );
+ db.reset_levels( true );
+ CHECK( cr[ 1 ].is_relaxed() && sl[ 1 ].is_fixed() );
+ db.set_x_values( { 0.3 , -1 , 2 , 0.5 , 4 } );
+ db.next_level();
+ CHECK( ( ! cr[ 1 ].is_relaxed() ) && ( ! sl[ 1 ].is_fixed() ) );
+ CHECK( ! l0.back().is_relaxed() );
+ CHECK( l0.front().is_relaxed() );
+ db.next_level();
+ // s_2 fixed at the residual at the x of the owners, 2 ( 0.3 + 4 + 1.5 - 1 )
+ CHECK( sl[ 2 ].is_fixed() &&
+        ( std::abs( sl[ 2 ].get_value() - 9.6 ) < 1e-12 ) );
+ CHECK( ! l0.front().is_relaxed() );
+ for( Index p = 0 ; p < 4 ; ++p ) {
+  Vec v , w , vc , wc;
+  generate( central );
+  central.set_x_values( { 0.3 , -1 , 2 , 0.5 , 4 } );
+  CHECK( db.level_slacks( p , v , w ) == central.level_slacks( p , vc , wc ) );
+  }
+
+ // a change in the pattern: the side of a coupling row and the coefficients
+ // of a part of it, by Modification
+ s->get_Modification_list().clear();
+ db.set_d( 1 , { 0 , 3 } );
+ CHECK( cr[ 2 ].get_rhs() == 6 );
+ Mat C1 = D.C[ 1 ];
+ C1( 1 , 3 ) = 4;
+ db.set_C( 1 , sparse( C1 ) );
+ CHECK( row_is( l1.back() , { { & x1[ 0 ] , 2 } , { & x1[ 1 ] , 4 } ,
+                              { & t[ 5 ] , -1 } } , - Inf_d , 0 ) );
+ CHECK( std::none_of( s->get_Modification_list().begin() ,
+                      s->get_Modification_list().end() ,
+                      []( const auto & m ) {
+                       return( bool( std::dynamic_pointer_cast<
+                                       const NBModification >( m ) ) ); } ) );
+ // out of it: x_4 in x_1 + x_2 <= 0 changes the part of owner 0
+ s->get_Modification_list().clear();
+ C1( 0 , 4 ) = 1;
+ db.set_C( 1 , sparse( C1 ) );
+ CHECK( ( ! s->get_Modification_list().empty() ) &&
+        std::dynamic_pointer_cast< const NBModification >(
+                                 s->get_Modification_list().front() ) );
+ CHECK( db.get_robot( 0 )->get_link_rows().size() == 3 );
+ db.unregister_Solvers( true );
+
+ // the structure cannot change once the abstract representation is there
+ HQPDistBlock dc;
+ dc.load( central , 2 , { 0 , 0 , 1 , 1 , 0 } );
+ dc.generate_abstract_variables();
+ CHECK( throws< std::logic_error >( [ & ]() { dc.set_structure( strc ); } ) );
+
+ std::ostringstream os;
+ db.print( os );
+ CHECK( os.str().rfind( "HQPDistBlock with 2 sub-Blocks and 3 coupling rows" ,
+                        0 ) == 0 );
+ delete strc;
+
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
 /*--------------------------------------------------------------------------*/
 
 int main( int argc , char ** argv )
@@ -1312,6 +1467,7 @@ int main( int argc , char ** argv )
  test_reg_weights();
  test_refix();
  test_dist();
+ test_dist_benders();
 
  std::cout << ( errors ? "HQPBlock: FAILED" : "HQPBlock: all tests passed" )
            << std::endl;

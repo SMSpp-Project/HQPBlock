@@ -419,6 +419,7 @@ void HQPBlock::generate_abstract_constraints( Configuration * stcc )
 
  add_static_constraint( v_eq , "eq" );
  add_static_constraint( v_in , "ineq" );
+ add_dynamic_constraint( v_link , "link" );
 
  AR |= HasCns;
 
@@ -449,7 +450,8 @@ void HQPBlock::generate_objective( Configuration * objc )
   for( Index i = v_in_start[ p ] ; i < v_in_start[ p + 1 ] ; ++i )
    t.emplace_back( & v_w[ i ] , 0.0 , v_lvl_obj[ p ] ? 0.5 : 0.0 );
 
- f_obj.set_function( new DQuadFunction( std::move( t ) ) , eNoMod );
+ f_obj.set_function( new DQuadFunction( std::move( t ) , reg_constant() ) ,
+                     eNoMod );
  f_obj.set_sense( Objective::eMin , eNoMod );
  set_objective( & f_obj , eNoMod );
 
@@ -708,6 +710,9 @@ void HQPBlock::set_regularization( double eps , ModParam issueMod )
  static_cast< DQuadFunction * >( f_obj.get_function() )->modify_terms(
        quad.cbegin() , lin.cbegin() , DQuadFunction::Range( 0 , f_n ) ,
        issueMod );
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ if( f->get_constant_term() != reg_constant() )
+  f->set_constant_term( reg_constant() , issueMod );
 
  }  // end( HQPBlock::set_regularization )
 
@@ -726,11 +731,23 @@ void HQPBlock::set_center( const Vec_double & c , ModParam issueMod )
  if( ! v_center.empty() )
   for( Index j = 0 ; j < f_n ; ++j )
    lin[ j ] = - f_eps * reg_weight( j ) * v_center[ j ];
- static_cast< DQuadFunction * >( f_obj.get_function() )->
-  modify_linear_coefficients( std::move( lin ) ,
-                              DQuadFunction::Range( 0 , f_n ) , issueMod );
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ f->modify_linear_coefficients( std::move( lin ) ,
+                                DQuadFunction::Range( 0 , f_n ) , issueMod );
+ if( f->get_constant_term() != reg_constant() )
+  f->set_constant_term( reg_constant() , issueMod );
 
  }  // end( HQPBlock::set_center )
+
+/*--------------------------------------------------------------------------*/
+
+double HQPBlock::reg_constant( void ) const
+{
+ double c2 = 0;
+ for( Index j = 0 ; j < v_center.size() ; ++j )
+  c2 += reg_weight( j ) * v_center[ j ] * v_center[ j ];
+ return( f_eps * c2 / 2 );
+ }
 
 /*--------------------------------------------------------------------------*/
 /*---------------------------- Methods for printing ------------------------*/
@@ -772,14 +789,18 @@ void HQPBlock::guts_of_destructor( void )
   row.clear();
  for( auto & row : v_in )
   row.clear();
+ for( auto & row : v_link )
+  row.clear();
  f_obj.clear();
 
  reset_static_constraints();
+ reset_dynamic_constraints();
  reset_static_variables();
  reset_objective();
 
  v_eq.clear();
  v_in.clear();
+ v_link.clear();
  v_cols.clear();
  v_x.clear();
  v_v.clear();

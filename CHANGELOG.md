@@ -13,14 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HQPBlock`, the hierarchical (lexicographic) QP as one model in the
   original variables, with the methods that move it from a level to the next
   one and change its data by Modification, a weight for each variable in the
-  regularization, and its netCDF format
+  regularization, whose constant is in the `Objective`, a dynamic group of
+  rows `link` that an ancestor fills, and its netCDF format
 - `HQPLevelBlock`, the interface of the levels of a hierarchical QP that
   `HQPSolver` uses, which `HQPBlock` and `HQPDistBlock` implement
 - `HQPDistBlock`, the hierarchical QP split among owners of its columns (a
   sub-Block `HQPBlock` for each owner, with copies of the variables of the
-  others in its rows, and the consensus rows in the root), exactly the
-  centralized hierarchy on the consensus, so that it can be solved by
-  decomposition, and its netCDF format
+  others in its rows, and the consensus rows in the root, with the
+  structure `kConsensus`; the coupling rows in the root, and their parts in
+  the sub-Blocks bounded by its variables, with `kBenders`, chosen by
+  `set_structure()`), exactly the centralized hierarchy, so that it can be
+  solved by decomposition, and its netCDF format
 - `HQPSolver`, which solves the levels of an `HQPBlock` one after the other,
   each with an inner Solver of its own taken from the same
   `BlockSolverConfig`, so that an inner Solver that re-optimizes (e.g.,
