@@ -147,7 +147,11 @@ int HQPSolver::compute( bool changedvars )
  v_wl.clear();
  v_val.clear();
 
- auto hb = dynamic_cast< HQPBlock * >( f_Block );
+ // the inner Solvers dropped by an NBModification are created anew
+ if( v_inner.empty() )
+  create_inner();
+
+ auto hb = dynamic_cast< HQPLevelBlock * >( f_Block );
  if( ( ! hb ) || v_inner.empty() || ( ! hb->get_num_levels() ) ) {
   unlock();
   return( f_status = kError );
@@ -168,7 +172,6 @@ int HQPSolver::compute( bool changedvars )
 
  const int verb = f_verb;
  const Index P = hb->get_num_levels();
- const Index n = hb->get_num_var();
 
  lock_block();
  hb->reset_levels( f_relax );
@@ -201,9 +204,8 @@ int HQPSolver::compute( bool changedvars )
   lock_block();
   inner->get_var_solution();
 
-  Vec_double x( n );
-  for( Index j = 0 ; j < n ; ++j )
-   x[ j ] = hb->get_x()[ j ].get_value();
+  Vec_double x;
+  hb->get_x_values( x );
   Vec_double v , w;
   v_val.push_back( hb->level_slacks( p , v , w ) );
   v_vl.push_back( std::move( v ) );
@@ -234,23 +236,14 @@ int HQPSolver::compute( bool changedvars )
 
 void HQPSolver::get_var_solution( Configuration * solc )
 {
- auto hb = dynamic_cast< HQPBlock * >( f_Block );
+ auto hb = dynamic_cast< HQPLevelBlock * >( f_Block );
  if( ( ! hb ) || v_xl.empty() )
   return;
 
- // the ColVariable are written as they are, but a fixed slack only takes
- // the value it is fixed at [see ColVariable::set_value()]
- auto & x = const_cast< std::vector< ColVariable > & >( hb->get_x() );
- auto & v = const_cast< std::vector< ColVariable > & >( hb->get_v() );
- auto & w = const_cast< std::vector< ColVariable > & >( hb->get_w() );
- for( Index j = 0 ; j < x.size() ; ++j )
-  x[ j ].set_value( v_xl.back()[ j ] );
- for( Index p = 0 ; p < v_xl.size() ; ++p ) {
-  for( Index h = 0 ; h < v_vl[ p ].size() ; ++h )
-   v[ hb->get_eq_start( p ) + h ].set_value( v_vl[ p ][ h ] );
-  for( Index h = 0 ; h < v_wl[ p ].size() ; ++h )
-   w[ hb->get_ineq_start( p ) + h ].set_value( v_wl[ p ][ h ] );
-  }
+ // a fixed slack only takes the value it is fixed at
+ hb->set_x_values( v_xl.back() );
+ for( Index p = 0 ; p < v_xl.size() ; ++p )
+  hb->set_slack_values( p , v_vl[ p ] , v_wl[ p ] );
  }  // end( HQPSolver::get_var_solution )
 
 /*--------------------------------------------------------------------------*/
@@ -283,6 +276,10 @@ Solver * HQPSolver::new_inner( void )
   if( ( i < cfgs.size() ) && cfgs[ i ] )
    s->set_ComputeConfig( cfgs[ i ] );
   s->set_Block( f_Block );
+  // after the ComputeConfig, which may create Solvers of its own that the
+  // log is passed to (e.g., the inner Solver of a LagrangianDualSolver)
+  if( f_log )
+   s->set_log( f_log );
   return( s );
   }
  return( nullptr );

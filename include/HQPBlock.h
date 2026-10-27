@@ -57,6 +57,106 @@ namespace SMSpp_di_unipi_it
  *  @{ */
 
 /*--------------------------------------------------------------------------*/
+/*-------------------------- CLASS HQPLevelBlock ---------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the levels of a hierarchical QP, whatever Block holds them
+/** The HQPLevelBlock class is the interface through which a Solver of a
+ * hierarchical (lexicographic) Quadratic Program [see HQPSolver] moves a
+ * Block from a level to the next one and reads and writes its solution,
+ * whatever the Block is: the HQPBlock, which is the whole hierarchy, and
+ * the HQPDistBlock, where it is split among sub-Blocks. All is in terms of
+ * the \f$ n \f$ variables \f$ x \f$ and of the slacks of the hierarchy [see
+ * HQPBlock], whatever the abstract representation that holds them. */
+
+class HQPLevelBlock : public Block
+{
+/*----------------------- PUBLIC PART OF THE CLASS -------------------------*/
+
+ public:
+
+/*---------------------------- PUBLIC TYPES --------------------------------*/
+
+ using Vec_double = std::vector< double >;  ///< a vector of double
+
+/*------------------------------ CONSTRUCTOR -------------------------------*/
+ /// constructor of HQPLevelBlock, taking a pointer to the father Block
+
+ explicit HQPLevelBlock( Block * father = nullptr ) : Block( father ) {}
+
+/*------------------------------ DESTRUCTOR --------------------------------*/
+ /// destructor of HQPLevelBlock, does nothing
+
+ virtual ~HQPLevelBlock() = default;
+
+/*------------------------ Methods for the levels --------------------------*/
+ /// returns the number \f$ n \f$ of variables
+
+ [[nodiscard]] virtual Index get_num_var( void ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the number \f$ P \f$ of levels
+
+ [[nodiscard]] virtual Index get_num_levels( void ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// brings the abstract representation to the problem of level 0
+ /** Brings the abstract representation to the problem of level 0, the rows
+  * of the other levels relaxed if \p relax_lower [see
+  * HQPBlock::reset_levels()]. */
+
+ virtual void reset_levels( bool relax_lower = false ,
+                            ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// moves the abstract representation from level p to level p + 1
+ /** Moves the abstract representation from the current level p to level
+  * p + 1, the slacks of level p being fixed at their values at the current
+  * \f$ x \f$ plus \p tol on the inequality ones [see
+  * HQPBlock::next_level()]. */
+
+ virtual void next_level( double tol = 0 , ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// computes the slacks of level p at the current \f$ x \f$
+ /** Writes in \p v and \p w the slacks of level p at the current \f$ x \f$
+  * [see get_x_values()] and returns the value \f$ \|v\|^2 / 2 + \|w\|^2 /
+  * 2 \f$ of level p there [see HQPBlock::level_slacks()]. */
+
+ virtual double level_slacks( Index p , Vec_double & v ,
+                              Vec_double & w ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the center \f$ c \f$ of the regularization (empty means 0)
+
+ virtual void set_center( const Vec_double & c ,
+                          ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes in \p x the current values of the \f$ n \f$ variables
+
+ virtual void get_x_values( Vec_double & x ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes \p x in the ColVariable of the \f$ n \f$ variables
+ /** Writes \p x, of size \f$ n \f$, in the ColVariable that hold the \f$ n
+  * \f$ variables, issuing no Modification. */
+
+ virtual void set_x_values( const Vec_double & x ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes the slacks of level p in their ColVariable
+ /** Writes \p v and \p w, of sizes \f$ m_p \f$ and \f$ l_p \f$, in the
+  * ColVariable of the slacks of level p, issuing no Modification; a fixed
+  * slack keeps the value it is fixed at [see ColVariable::set_value()]. */
+
+ virtual void set_slack_values( Index p , const Vec_double & v ,
+                                const Vec_double & w ) = 0;
+
+/*--------------------------------------------------------------------------*/
+
+ };  // end( class( HQPLevelBlock ) )
+
+/*--------------------------------------------------------------------------*/
 /*----------------------------- CLASS HQPBlock -----------------------------*/
 /*--------------------------------------------------------------------------*/
 /// implementation of the Block concept for a hierarchical QP
@@ -81,14 +181,17 @@ namespace SMSpp_di_unipi_it
  *
  * \f[
  *   (L_p) \qquad \min \Big\{ \, \tfrac{1}{2} \| v_p \|^2 +
- *         \tfrac{1}{2} \| w_p \|^2 + \tfrac{\varepsilon}{2} \| x - c \|^2
- *         \;:\; v_q = v^*_q \,,\, w_q = w^*_q \;\; q < p \,,\;
- *         \mbox{the rows of all the levels} \, \Big\} \;\;,
+ *         \tfrac{1}{2} \| w_p \|^2 + \tfrac{\varepsilon}{2} \sum_j r_j
+ *         ( x_j - c_j )^2 \;:\; v_q = v^*_q \,,\, w_q = w^*_q \;\; q < p
+ *         \,,\; \mbox{the rows of all the levels} \, \Big\} \;\;,
  * \f]
  *
- * where \f$ \varepsilon \geq 0 \f$ is a regularization weight and \f$ c
- * \f$ its center (0 if not given), which a Solver can move, e.g., to the
- * solution of the previous level, to get a proximal term. Fixing \f$ v_q \f$
+ * where \f$ \varepsilon \geq 0 \f$ is a regularization weight, \f$ r_j
+ * > 0 \f$ that of variable j (1 if not given, e.g., less than 1 for a
+ * variable that is one of several copies of the same one, as in an
+ * HQPDistBlock) and \f$ c \f$ the center (0 if not given), which a Solver
+ * can move, e.g., to the solution of the previous level, to get a proximal
+ * term. Fixing \f$ v_q \f$
  * keeps \f$ A_q x \f$ at its optimal value, i.e., an equality task of a
  * higher level keeps its optimal residual, while fixing \f$ w_q \f$ gives
  * \f$ W^i_q ( C_q x - d_q ) \leq w^*_q \f$, i.e., an inequality task of a
@@ -148,7 +251,7 @@ namespace SMSpp_di_unipi_it
  * fixed slacks and the center of the regularization are a state of the
  * solution process, not of the model. */
 
-class HQPBlock : public Block
+class HQPBlock : public HQPLevelBlock
 {
 /*----------------------- PUBLIC PART OF THE CLASS -------------------------*/
 
@@ -158,8 +261,6 @@ class HQPBlock : public Block
 
  /// the row-major sparse matrix of the coefficients of a level
  using SparseMatrix = Eigen::SparseMatrix< double , Eigen::RowMajor >;
-
- using Vec_double = std::vector< double >;  ///< a vector of double
 
  /// the state of the slacks and of the rows of a level
  enum level_state {
@@ -177,7 +278,7 @@ class HQPBlock : public Block
   * called. */
 
  explicit HQPBlock( Block * father = nullptr )
-  : Block( father ) , f_n( 0 ) , f_eps( 0 ) , f_level( 0 ) ,
+  : HQPLevelBlock( father ) , f_n( 0 ) , f_eps( 0 ) , f_level( 0 ) ,
     f_relax_lower( false ) , AR( 0 ) {}
 
 /*------------------------------ DESTRUCTOR --------------------------------*/
@@ -201,7 +302,9 @@ class HQPBlock : public Block
   *   \f$; either vector may be empty, and so any of its elements, meaning
   *   all ones;
   *
-  * - eps is the weight \f$ \varepsilon \f$ of the regularization.
+  * - eps is the weight \f$ \varepsilon \f$ of the regularization, and rw
+  *   the weights \f$ r_j > 0 \f$ of the variables in it (empty meaning all
+  *   ones).
   *
   * As the && tell, the vectors become property of the HQPBlock. If the
   * abstract representation is there already it is constructed anew, and an
@@ -213,7 +316,8 @@ class HQPBlock : public Block
             std::vector< SparseMatrix > && C ,
             std::vector< Vec_double > && d ,
             std::vector< Vec_double > && we = {} ,
-            std::vector< Vec_double > && wi = {} , double eps = 0 );
+            std::vector< Vec_double > && wi = {} , double eps = 0 ,
+            Vec_double && rw = {} );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// extends Block::deserialize( netCDF::NcGroup )
@@ -253,7 +357,11 @@ class HQPBlock : public Block
   *   the \f$ W^i_p \f$;
   *
   * - the scalar variable "Regularization" (netCDF::NcDouble), the weight
-  *   \f$ \varepsilon \f$, optional (0 if not there). */
+  *   \f$ \varepsilon \f$, optional (0 if not there);
+  *
+  * - the variable "RegularizationWeight" (netCDF::NcDouble, indexed over
+  *   "NumVar"), the weights \f$ r_j \f$, optional (all ones if not
+  *   there). */
 
  void deserialize( const netCDF::NcGroup & group ) override;
 
@@ -294,9 +402,10 @@ class HQPBlock : public Block
  /** Generates the FRealObjective, a minimization one whose DQuadFunction
   * has as active Variable \f$ x \f$, then \f$ v \f$, then \f$ w \f$, in the
   * order of generate_abstract_variables(); the coefficients (linear and
-  * quadratic) are those of the current level, i.e., \f$ ( - \varepsilon c ,
-  * \varepsilon / 2 ) \f$ for \f$ x \f$, \f$ ( 0 , 1 / 2 ) \f$ for the slacks
-  * in the Objective and \f$ ( 0 , 0 ) \f$ for the others. */
+  * quadratic) are those of the current level, i.e., \f$ ( - \varepsilon
+  * r_j c_j , \varepsilon r_j / 2 ) \f$ for \f$ x_j \f$, \f$ ( 0 , 1 / 2 )
+  * \f$ for the slacks in the Objective and \f$ ( 0 , 0 ) \f$ for the
+  * others. */
 
  void generate_objective( Configuration * objc = nullptr ) override;
 
@@ -311,12 +420,14 @@ class HQPBlock : public Block
 /*----------------------- Methods for reading the data ---------------------*/
  /// returns the number \f$ n \f$ of variables
 
- [[nodiscard]] Index get_num_var( void ) const { return( f_n ); }
+ [[nodiscard]] Index get_num_var( void ) const override { return( f_n ); }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number \f$ P \f$ of levels
 
- [[nodiscard]] Index get_num_levels( void ) const { return( v_A.size() ); }
+ [[nodiscard]] Index get_num_levels( void ) const override {
+  return( v_A.size() );
+  }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number \f$ m_p \f$ of equality rows of level p
@@ -388,6 +499,13 @@ class HQPBlock : public Block
  /// returns the weight \f$ \varepsilon \f$ of the regularization
 
  [[nodiscard]] double get_regularization( void ) const { return( f_eps ); }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the weights \f$ r_j \f$ of the regularization (empty: all ones)
+
+ [[nodiscard]] const Vec_double & get_regularization_weights( void ) const {
+  return( v_rw );
+  }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the center \f$ c \f$ of the regularization (empty means 0)
@@ -464,7 +582,7 @@ class HQPBlock : public Block
   * according to \p issueMod [see Observer::make_par()]. */
 
  void reset_levels( bool relax_lower = false ,
-                    ModParam issueMod = eModBlck );
+                    ModParam issueMod = eModBlck ) override;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// moves the abstract representation from level p to level p + 1
@@ -485,7 +603,7 @@ class HQPBlock : public Block
   * rows enforced, if they were relaxed) and they enter the Objective. The
   * changes are issued as Modification according to \p issueMod. */
 
- void next_level( double tol = 0 , ModParam issueMod = eModBlck );
+ void next_level( double tol = 0 , ModParam issueMod = eModBlck ) override;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// computes the slacks of level p at the current values of x
@@ -494,7 +612,38 @@ class HQPBlock : public Block
   * values of the ColVariable \f$ x \f$, and returns the value \f$ \|v\|^2 /
   * 2 + \|w\|^2 / 2 \f$ of level p there. */
 
- double level_slacks( Index p , Vec_double & v , Vec_double & w ) const;
+ double level_slacks( Index p , Vec_double & v ,
+                      Vec_double & w ) const override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// fixes again the slacks of a fixed level p at the current values of x
+ /** Fixes again the slacks of level p, which must be fixed [see
+  * level_state], at their values at the current values of the ColVariable
+  * \f$ x \f$ [see level_slacks()], but each \f$ w \f$ only if this is
+  * larger than the value it is fixed at, so that the current \f$ x \f$
+  * satisfies the rows of level p; e.g., after the values of some of the
+  * \f$ x \f$ have been changed from outside, as an HQPDistBlock does with
+  * the copies of the variables of other sub-Blocks. Only the slacks whose
+  * value changes are fixed again, by Modification according to \p
+  * issueMod. */
+
+ void refix_level( Index p , ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes in \p x the current values of the ColVariable \f$ x \f$
+
+ void get_x_values( Vec_double & x ) const override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes \p x in the ColVariable \f$ x \f$, issuing no Modification
+
+ void set_x_values( const Vec_double & x ) override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes the slacks of level p in their ColVariable, with no Modification
+
+ void set_slack_values( Index p , const Vec_double & v ,
+                        const Vec_double & w ) override;
 
 /*-------------------------- Methods for changing data ---------------------*/
  /// changes \f$ b_p \f$
@@ -552,7 +701,17 @@ class HQPBlock : public Block
   * by Modification according to \p issueMod. The constant \f$ \varepsilon
   * \| c \|^2 / 2 \f$ is not added to the Objective. */
 
- void set_center( const Vec_double & c , ModParam issueMod = eModBlck );
+ void set_center( const Vec_double & c ,
+                  ModParam issueMod = eModBlck ) override;
+
+/*----------------------- Methods for handling Solution --------------------*/
+ /// returns a ColVariableSolution of the ColVariable of the HQPBlock
+ /** Returns a ColVariableSolution of all the ColVariable of the HQPBlock
+  * (\f$ x \f$ and the slacks), read from them if ! \p emptys; \p solc is
+  * ignored. */
+
+ Solution * get_Solution( Configuration * solc = nullptr ,
+                          bool emptys = true ) override;
 
 /*---------------------------- Methods for printing ------------------------*/
  /// prints the HQPBlock on an ostream with the given verbosity
@@ -593,8 +752,16 @@ class HQPBlock : public Block
                     std::vector< SparseMatrix > && C ,
                     std::vector< Vec_double > && d ,
                     std::vector< Vec_double > && we ,
-                    std::vector< Vec_double > && wi , double eps );
+                    std::vector< Vec_double > && wi , double eps ,
+                    Vec_double && rw );
 
+ /// the weight \f$ r_j \f$ of variable j in the regularization
+
+ [[nodiscard]] double reg_weight( Index j ) const {
+  return( v_rw.empty() ? 1.0 : v_rw[ j ] );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// throws std::invalid_argument, naming method, if p is not a level
 
  void check_level( Index p , const char * method ) const;
@@ -645,6 +812,7 @@ class HQPBlock : public Block
  std::vector< Index > v_in_start;   ///< first inequality row of each level
 
  double f_eps;                      ///< weight of the regularization
+ Vec_double v_rw;                   ///< weights of the variables in it
  Vec_double v_center;               ///< center of the regularization
 
  std::vector< ColVariable > v_x;    ///< the variables x

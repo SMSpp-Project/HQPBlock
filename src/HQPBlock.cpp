@@ -25,6 +25,8 @@
 
 #include <numeric>
 
+#include "ColVariableSolution.h"
+
 #include "SMSnetCDF.h"
 
 /*--------------------------------------------------------------------------*/
@@ -165,10 +167,12 @@ void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
                      std::vector< SparseMatrix > && C ,
                      std::vector< Vec_double > && d ,
                      std::vector< Vec_double > && we ,
-                     std::vector< Vec_double > && wi , double eps )
+                     std::vector< Vec_double > && wi , double eps ,
+                     Vec_double && rw )
 {
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
-               std::move( d ) , std::move( we ) , std::move( wi ) , eps );
+               std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
+               std::move( rw ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -186,7 +190,8 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
                              std::vector< SparseMatrix > && C ,
                              std::vector< Vec_double > && d ,
                              std::vector< Vec_double > && we ,
-                             std::vector< Vec_double > && wi , double eps )
+                             std::vector< Vec_double > && wi , double eps ,
+                             Vec_double && rw )
 {
  const Index P = A.size();
  if( ( ! n ) || ( ! P ) )
@@ -200,6 +205,13 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
  if( ! ( eps >= 0 ) )
   throw( std::invalid_argument( "HQPBlock::guts_of_load: negative "
                                 "regularization" ) );
+ if( ( ! rw.empty() ) && ( rw.size() != n ) )
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: wrong size of "
+                                "the weights of the regularization" ) );
+ if( std::any_of( rw.begin() , rw.end() ,
+                  []( double r ) { return( ! ( r > 0 ) ); } ) )
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: a weight of the "
+                                "regularization is not positive" ) );
 
  for( Index p = 0 ; p < P ; ++p ) {
   if( ( Index( A[ p ].cols() ) != n ) || ( Index( C[ p ].cols() ) != n ) )
@@ -225,6 +237,7 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
 
  f_n = n;
  f_eps = eps;
+ v_rw = std::move( rw );
  v_center.clear();
 
  v_eq_start.assign( P + 1 , 0 );
@@ -276,10 +289,13 @@ void HQPBlock::deserialize( const netCDF::NcGroup & group )
 
  double eps = 0;
  ::deserialize( group , eps , "Regularization" , true );
+ Vec_double rw;
+ ::deserialize( group , "RegularizationWeight" , n , rw , true );
 
  // the NBModification is issued by Block::deserialize()
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
-               std::move( d ) , std::move( we ) , std::move( wi ) , eps );
+               std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
+               std::move( rw ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -298,7 +314,7 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
 {
  Block::serialize( group );
 
- group.addDim( "NumVar" , f_n );
+ auto dn = group.addDim( "NumVar" , f_n );
  auto dl = group.addDim( "NumLevels" , get_num_levels() );
 
  write_rows( group , "Eq" , dl , v_A , v_b , v_we );
@@ -306,6 +322,11 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
 
  if( f_eps != 0 )
   group.addVar( "Regularization" , netCDF::NcDouble() ).putVar( &f_eps );
+
+ if( std::any_of( v_rw.begin() , v_rw.end() ,
+                  []( double r ) { return( r != 1 ); } ) )
+  group.addVar( "RegularizationWeight" , netCDF::NcDouble() , dn ).putVar(
+                                                               v_rw.data() );
 
  }  // end( HQPBlock::serialize )
 
@@ -418,9 +439,9 @@ void HQPBlock::generate_objective( Configuration * objc )
  DQuadFunction::v_coeff_triple t;
  t.reserve( f_n + v_v.size() + v_w.size() );
  for( Index j = 0 ; j < f_n ; ++j )
-  t.emplace_back( & v_x[ j ] ,
-                  v_center.empty() ? 0.0 : - f_eps * v_center[ j ] ,
-                  f_eps / 2 );
+  t.emplace_back( & v_x[ j ] , v_center.empty() ? 0.0 :
+                  - f_eps * reg_weight( j ) * v_center[ j ] ,
+                  f_eps * reg_weight( j ) / 2 );
  for( Index p = 0 ; p < get_num_levels() ; ++p )
   for( Index i = v_eq_start[ p ] ; i < v_eq_start[ p + 1 ] ; ++i )
    t.emplace_back( & v_v[ i ] , 0.0 , v_lvl_obj[ p ] ? 0.5 : 0.0 );
@@ -516,6 +537,83 @@ double HQPBlock::level_slacks( Index p , Vec_double & v ,
  }  // end( HQPBlock::level_slacks )
 
 /*--------------------------------------------------------------------------*/
+
+void HQPBlock::refix_level( Index p , ModParam issueMod )
+{
+ check_level( p , "refix_level" );
+ if( v_lvl_state[ p ] != kFixed )
+  throw( std::logic_error( "HQPBlock::refix_level: level " +
+                           std::to_string( p ) + " is not fixed" ) );
+
+ Vec_double v , w;
+ level_slacks( p , v , w );
+
+ auto refix = [ & ]( ColVariable & var , double val ) {
+  if( var.get_value() == val )
+   return;
+  var.is_fixed( false , issueMod );
+  var.set_value( val );
+  var.is_fixed( true , issueMod );
+  };
+
+ for( Index h = 0 ; h < get_num_eq_rows( p ) ; ++h )
+  refix( v_v[ v_eq_start[ p ] + h ] , v[ h ] );
+ for( Index h = 0 ; h < get_num_ineq_rows( p ) ; ++h ) {
+  auto & var = v_w[ v_in_start[ p ] + h ];
+  refix( var , std::max( var.get_value() , w[ h ] ) );
+  }
+ }  // end( HQPBlock::refix_level )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::get_x_values( Vec_double & x ) const
+{
+ x.resize( v_x.size() );
+ for( Index j = 0 ; j < v_x.size() ; ++j )
+  x[ j ] = v_x[ j ].get_value();
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_x_values( const Vec_double & x )
+{
+ if( x.size() != v_x.size() )
+  throw( std::invalid_argument( "HQPBlock::set_x_values: wrong size" ) );
+ for( Index j = 0 ; j < v_x.size() ; ++j )
+  v_x[ j ].set_value( x[ j ] );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_slack_values( Index p , const Vec_double & v ,
+                                 const Vec_double & w )
+{
+ check_level( p , "set_slack_values" );
+ if( ( v.size() != get_num_eq_rows( p ) ) ||
+     ( w.size() != get_num_ineq_rows( p ) ) )
+  throw( std::invalid_argument( "HQPBlock::set_slack_values: wrong "
+                                "size" ) );
+ if( ! ( AR & HasVar ) )
+  return;
+ for( Index h = 0 ; h < v.size() ; ++h )
+  v_v[ v_eq_start[ p ] + h ].set_value( v[ h ] );
+ for( Index h = 0 ; h < w.size() ; ++h )
+  v_w[ v_in_start[ p ] + h ].set_value( w[ h ] );
+ }
+
+/*--------------------------------------------------------------------------*/
+/*----------------------- Methods for handling Solution --------------------*/
+/*--------------------------------------------------------------------------*/
+
+Solution * HQPBlock::get_Solution( Configuration * solc , bool emptys )
+{
+ auto sol = new ColVariableSolution;
+ if( ! emptys )
+  sol->read( this );
+ return( sol );
+ }
+
+/*--------------------------------------------------------------------------*/
 /*-------------------------- Methods for changing data ---------------------*/
 /*--------------------------------------------------------------------------*/
 
@@ -601,10 +699,12 @@ void HQPBlock::set_regularization( double eps , ModParam issueMod )
  if( ! ( AR & HasObj ) )
   return;
 
- DQuadFunction::v_coeff quad( f_n , f_eps / 2 ) , lin( f_n , 0 );
- if( ! v_center.empty() )
-  for( Index j = 0 ; j < f_n ; ++j )
-   lin[ j ] = - f_eps * v_center[ j ];
+ DQuadFunction::v_coeff quad( f_n ) , lin( f_n , 0 );
+ for( Index j = 0 ; j < f_n ; ++j ) {
+  quad[ j ] = f_eps * reg_weight( j ) / 2;
+  if( ! v_center.empty() )
+   lin[ j ] = - f_eps * reg_weight( j ) * v_center[ j ];
+  }
  static_cast< DQuadFunction * >( f_obj.get_function() )->modify_terms(
        quad.cbegin() , lin.cbegin() , DQuadFunction::Range( 0 , f_n ) ,
        issueMod );
@@ -625,7 +725,7 @@ void HQPBlock::set_center( const Vec_double & c , ModParam issueMod )
  DQuadFunction::v_coeff lin( f_n , 0 );
  if( ! v_center.empty() )
   for( Index j = 0 ; j < f_n ; ++j )
-   lin[ j ] = - f_eps * v_center[ j ];
+   lin[ j ] = - f_eps * reg_weight( j ) * v_center[ j ];
  static_cast< DQuadFunction * >( f_obj.get_function() )->
   modify_linear_coefficients( std::move( lin ) ,
                               DQuadFunction::Range( 0 , f_n ) , issueMod );

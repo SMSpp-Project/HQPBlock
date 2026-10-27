@@ -113,6 +113,13 @@ namespace SMSpp_di_unipi_it
  * HQPBlock is left in the state of the last level solved (its slacks of the
  * previous levels fixed), which the next compute() resets.
  *
+ * All that the HQPSolver uses of the HQPBlock is in the interface
+ * HQPLevelBlock, and the Block can be any :HQPLevelBlock: e.g., an
+ * HQPDistBlock, where the hierarchy is split among sub-Blocks, one for each
+ * robot of a multi-robot Model Predictive Control, and the inner Solver is
+ * either one that solves the whole tree (e.g., a :MILPSolver) or one that
+ * decomposes it (e.g., a LagrangianDualSolver).
+ *
  * Besides its own parameters, the HQPSolver listens to intLogVerb: if
  * positive, a line for each level is printed on the log [see set_log()]. */
 
@@ -158,7 +165,7 @@ class HQPSolver : public Solver
  ~HQPSolver() override;
 
 /*-------------------------- OTHER INITIALIZATIONS -------------------------*/
- /// sets the Block, which compute() requires to be an HQPBlock
+ /// sets the Block, which compute() requires to be an :HQPLevelBlock
  /** Sets the Block of the HQPSolver; if the BlockSolverConfig of the inner
   * Solver is known, the inner Solver is created and attached to it. */
 
@@ -200,10 +207,20 @@ class HQPSolver : public Solver
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// receives a Modification of the HQPBlock and passes it to the inner ones
+ /** Passes the Modification to all the inner Solvers, but for an
+  * NBModification of the HQPBlock: the HQPBlock has been (or is about to
+  * be) built anew, so the inner Solvers are dropped at once, while what
+  * they were built on may still be there [see HQPDistBlock::set_A()], and
+  * created anew by the next compute(). */
 
  void add_Modification( sp_Mod & mod ) override {
   if( f_no_Mod )
    return;
+  if( std::dynamic_pointer_cast< const NBModification >( mod ) &&
+      ( mod->get_Block() == f_Block ) ) {
+   drop_inner();
+   return;
+   }
   for( auto s : v_inner )
    s->add_Modification( mod );
   }
@@ -473,9 +490,10 @@ class HQPSolver : public Solver
  /// creates an inner Solver out of the BlockSolverConfig and attaches it
  /** Creates, through the Solver factory, the first Solver of the
   * BlockSolverConfig of strInnerBSC that is in the factory, configures it
-  * with its ComputeConfig and attaches it to the Block (without registering
-  * it); returns nullptr if there is no Block, no BlockSolverConfig or none
-  * of its Solver is in the factory. */
+  * with its ComputeConfig, attaches it to the Block (without registering
+  * it) and gives it the log of the HQPSolver, if any; returns nullptr if
+  * there is no Block, no BlockSolverConfig or none of its Solver is in the
+  * factory. */
 
  Solver * new_inner( void );
 

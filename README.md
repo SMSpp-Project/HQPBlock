@@ -11,7 +11,8 @@ Quadratic Programs of task-priority control, e.g., in the Model Predictive
 Control of robots. Level p (p = 0 being the highest priority) has the tasks
 `we_p (A_p x - b_p) = v_p` and `wi_p (C_p x - d_p) <= w_p`, with `w_p >= 0`,
 and it minimizes `||v_p||^2 / 2 + ||w_p||^2 / 2` (plus, possibly, the
-regularization `eps ||x - c||^2 / 2`) keeping the slacks of the higher levels
+regularization `eps sum_j r_j (x_j - c_j)^2 / 2`, the weights `r_j` being 1
+if not given) keeping the slacks of the higher levels
 at their optimal values. Thus, an equality task of a higher level keeps its
 optimal residual, and an inequality task is never violated more than at its
 optimum.
@@ -41,13 +42,34 @@ approach with a regularized step. With `intRelaxLower` (the default)
 the rows of the levels below the current one are relaxed and their slacks
 fixed to 0; this keeps the Hessian positive definite if `eps > 0`, while the
 rows left in the model with free slacks make it singular, which the inner
-Solvers handle rather less accurately.
+Solvers handle rather less accurately. All that `HQPSolver` uses of the
+Block is in the interface `HQPLevelBlock`, which `HQPBlock` implements and
+so does `HQPDistBlock`.
+
+`HQPDistBlock` is the same hierarchy with its variables split among owners,
+e.g., the robots of a multi-robot Model Predictive Control, so that it can
+be solved by decomposition. Out of the centralized hierarchy and the owner
+of each column, each row gets an owner among those of its columns, and each
+owner is a sub-Block, an `HQPBlock` with its own variables, a copy of each
+variable of another owner that appears in one of its rows, and its rows;
+the root has no variables, an empty `Objective` and the consensus rows that
+make each copy equal to the variable it copies. The regularization of a
+column is split among its copies, so that on the consensus the problem of
+each level is exactly that of the centralized hierarchy, which a Solver of
+the whole tree solves and a Lagrangian decomposition relaxes. Moving to the
+next level first gives the copies the values of their owners and fixes
+again the slacks of the levels already fixed at these values, so that every
+level is feasible whatever the accuracy of a decomposition.
 
 An `HQPBlock` is serialized into and deserialized out of netCDF, with the
 rows in compressed sparse row form (cf. `HQPBlock::deserialize()`). The
 script `tools/npz2nc4.py` converts a hierarchy given as a `.npz` file (keys
 `A_<p>`, `b_<p>`, `C_<p>`, `d_<p>` and, optionally, `we_<p>`, `wi_<p>`) into
-that format. The instances of `data/nc4` are some steps of the radial
+that format. An
+`HQPDistBlock` is the owners of the columns (and, optionally, of the rows)
+together with the centralized `HQPBlock` in a group of its own (cf.
+`HQPDistBlock::deserialize()`). The instances of `data/nc4` are some steps
+of the radial
 switching scenario of a Python implementation of the centralized
 hierarchical Model Predictive Control of a team of robots, with the solution
 of each level of that implementation.
@@ -58,12 +80,16 @@ abstract representation, the move from a level to the next one, the changes
 of the data and the Modification they issue), the netCDF format and the
 errors of the reader, on hierarchies with the degenerate parts of the format
 (levels with no equalities or no inequalities, empty levels, rows with no
-entries, weights different from 1). `HQPSolver`, whose inner Solver comes
+entries, weights different from 1), and those of `HQPDistBlock` (the owners
+of the rows, the copies and the consensus rows, the slacks fixed again,
+the changes of the data in and out of the pattern of a row). `HQPSolver`,
+whose inner Solver comes
 from another module, is tested by the suite
 [`HQPBlock`](https://gitlab.com/smspp/tests/-/tree/develop/HQPBlock) of the
-system tests of SMS++, which compares several inner Solvers and settings
-with an independent implementation of the null-space approach, on random
-and degenerate hierarchies and on the instances of `data/nc4`.
+system tests of SMS++, which compares several inner Solvers and settings,
+on the `HQPBlock` and on the `HQPDistBlock` of the same hierarchies, with an
+independent implementation of the null-space approach, on random and
+degenerate hierarchies and on the instances of `data/nc4`.
 
 
 ## Getting started

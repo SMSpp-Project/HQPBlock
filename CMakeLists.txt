@@ -120,6 +120,7 @@ endif ()
 # Note: do not GLOB files here.
 target_sources(${modName} PRIVATE
         src/HQPBlock.cpp
+        src/HQPDistBlock.cpp
         src/HQPSolver.cpp)
 
 # When using target_include_directories(), PUBLIC means that any targets

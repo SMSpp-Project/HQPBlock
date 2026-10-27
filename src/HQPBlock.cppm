@@ -31,6 +31,7 @@
 
 module;
 
+#include "HQPDistBlock.h"
 #include "HQPSolver.h"
 
 /*--------------------------------------------------------------------------*/
@@ -45,6 +46,10 @@ export namespace SMSpp_di_unipi_it {
 
  // HQPBlock.h
  using SMSpp_di_unipi_it::HQPBlock;
+ using SMSpp_di_unipi_it::HQPLevelBlock;
+
+ // HQPDistBlock.h
+ using SMSpp_di_unipi_it::HQPDistBlock;
 
  // HQPSolver.h
  using SMSpp_di_unipi_it::HQPSolver;

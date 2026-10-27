@@ -36,7 +36,25 @@
  *   starts decrease or whose column index is out of range (which
  *   Block::deserialize() reports, giving no Block);
  *
- * - print(), whose lines are compared whole.
+ * - print(), whose lines are compared whole;
+ *
+ * - the weights of the variables in the regularization: their coefficients
+ *   in the Objective, also after set_center() and set_regularization(),
+ *   their netCDF variable and the errors of load();
+ *
+ * - refix_level(), which raises the inequality slacks of a fixed level and
+ *   fixes again the equality ones, and get_Solution();
+ *
+ * - the HQPDistBlock of a small hierarchy split between 2 owners, with
+ *   local rows, coupling rows (a tie of entries, an owner given), a row with
+ *   no entries and a column copied by both owners: the owners of the rows,
+ *   the columns and copies of each sub-Block, the consensus rows, the weights
+ *   of the regularization, the rows of the sub-Blocks, the x and the slacks
+ *   of the hierarchy against those of the HQPBlock of the same data, the
+ *   copies brought to their owners and the slacks fixed again by
+ *   next_level(), a change of the data in the pattern (Modification of the
+ *   sub-Block) and out of it (an NBModification first, then the sub-Blocks
+ *   anew), the netCDF format and the errors of load().
  *
  * The HQPSolver, which needs an inner Solver from another module, is tested
  * by the suite HQPBlock of the system tests of SMS++.
@@ -66,6 +84,10 @@
 #include "FakeSolver.h"
 
 #include "HQPBlock.h"
+
+#include "HQPDistBlock.h"
+
+#include "ColVariableSolution.h"
 
 #include "LinearFunction.h"
 
@@ -941,6 +963,342 @@ static void test_print( void )
  std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
  }
 
+
+/*--------------------------------------------------------------------------*/
+
+static void test_reg_weights( void )
+{
+ std::cout << "the weights of the variables in the regularization"
+           << std::endl;
+ const int e0 = errors;
+
+ Data D = small_data();
+ D.eps = 0.5;
+ HQPBlock block;
+ {
+  std::vector< HQPBlock::SparseMatrix > A , C;
+  for( const auto & M : D.A ) A.push_back( sparse( M ) );
+  for( const auto & M : D.C ) C.push_back( sparse( M ) );
+  auto b = D.b , d = D.d;
+  block.load( D.n , std::move( A ) , std::move( b ) , std::move( C ) ,
+              std::move( d ) , {} , {} , D.eps , { 0.25 , 2 } );
+  }
+ generate( block );
+ const auto f = objective( block );
+ CHECK( f->get_quadratic_coefficient( 0 ) == 0.5 * 0.25 / 2 );
+ CHECK( f->get_quadratic_coefficient( 1 ) == 0.5 * 2 / 2 );
+ block.set_center( { 1 , -1 } );
+ CHECK( f->get_linear_coefficient( 0 ) == - 0.5 * 0.25 );
+ CHECK( f->get_linear_coefficient( 1 ) == 0.5 * 2 );
+ block.set_regularization( 2 );
+ CHECK( f->get_quadratic_coefficient( 0 ) == 2 * 0.25 / 2 );
+ CHECK( f->get_linear_coefficient( 1 ) == 2 * 2 );
+
+ // the netCDF variable, written only if a weight is not 1
+ const auto file = ( std::filesystem::temp_directory_path() /
+                     "HQPBlock_unit_test_rw.nc4" ).string();
+ block.serialize( file , eBlockFile );
+ {
+  netCDF::NcFile nf( file , netCDF::NcFile::read );
+  CHECK( ! block_group( nf ).getVar( "RegularizationWeight" ).isNull() );
+  }
+ auto back = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
+ std::filesystem::remove( file );
+ CHECK( back &&
+        ( back->get_regularization_weights() == Vec( { 0.25 , 2 } ) ) );
+ delete back;
+
+ // the errors: wrong size, a weight that is not positive
+ for( const Vec & rw : { Vec( { 1 } ) , Vec( { 1 , 0 } ) } ) {
+  HQPBlock bad;
+  std::vector< HQPBlock::SparseMatrix > A , C;
+  for( const auto & M : D.A ) A.push_back( sparse( M ) );
+  for( const auto & M : D.C ) C.push_back( sparse( M ) );
+  auto b = D.b , d = D.d;
+  auto w = rw;
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+   bad.load( D.n , std::move( A ) , std::move( b ) , std::move( C ) ,
+             std::move( d ) , {} , {} , 1 , std::move( w ) ); } ) );
+  }
+
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_refix( void )
+{
+ std::cout << "refix_level() and get_Solution()" << std::endl;
+ const int e0 = errors;
+
+ HQPBlock block;
+ load( block , small_data() );
+ generate( block );
+ auto & x = x_of( block );
+ block.reset_levels( true );
+ CHECK( throws< std::logic_error >( [ & ]() { block.refix_level( 0 ); } ) );
+ x[ 0 ].set_value( 1 );
+ x[ 1 ].set_value( 0.5 );
+ block.next_level();  // v_0 fixed at 1 + 0.5 - 2 = -0.5
+ CHECK( block.get_v()[ 0 ].get_value() == -0.5 );
+
+ // x moves: the fixed v_0 follows it
+ x[ 0 ].set_value( 2 );
+ block.refix_level( 0 );
+ CHECK( block.get_v()[ 0 ].get_value() == 0.5 );
+ CHECK( block.get_v()[ 0 ].is_fixed() );
+
+ // get_Solution() reads x and the slacks, and writes them back
+ auto sol = block.get_Solution( nullptr , false );
+ CHECK( dynamic_cast< ColVariableSolution * >( sol ) );
+ x[ 0 ].set_value( -7 );
+ sol->write( & block );
+ CHECK( x[ 0 ].get_value() == 2 );
+ delete sol;
+
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+// 5 columns, owners { 0 , 0 , 1 , 1 , 0 }, 4 levels:
+// - level 0: x_0 + x_1 = 1 (local to 0), x_2 - x_3 = 0 (local to 1), and a
+//   row with no entries (owned by 0);
+// - level 1: x_1 + x_2 <= 0, a tie between 0 and 1 (owned by 0), and
+//   x_0 + 2 x_2 + 3 x_3 <= 1 (2 entries of 1, owned by 1);
+// - level 2: x_4 + x_3 = 2, a tie owned by 0 unless given otherwise;
+// - level 3: empty, so that the coupling row of level 1 is fixed again.
+// Owner 0 copies x_2 and x_3, owner 1 copies x_0; x_2 has mu = 1, x_0 too.
+
+static Data dist_data( void )
+{
+ Data D;
+ D.n = 5;
+ D.eps = 0.1;
+ Mat A0( 3 , 5 ) , C1( 2 , 5 ) , A2( 1 , 5 );
+ A0 << 1 , 1 , 0 , 0 , 0 ,
+       0 , 0 , 1 , -1 , 0 ,
+       0 , 0 , 0 , 0 , 0;
+ C1 << 0 , 1 , 1 , 0 , 0 ,
+       1 , 0 , 2 , 3 , 0;
+ A2 << 0 , 0 , 0 , 1 , 1;
+ D.A = { A0 , Mat( 0 , 5 ) , A2 , Mat( 0 , 5 ) };
+ D.b = { { 1 , 0 , 0.5 } , {} , { 2 } , {} };
+ D.C = { Mat( 0 , 5 ) , C1 , Mat( 0 , 5 ) , Mat( 0 , 5 ) };
+ D.d = { {} , { 0 , 1 } , {} , {} };
+ D.wi = { {} , { 1 , 2 } , {} , {} };
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the LinearFunction of the k-th consensus row has the copy with 1 and the
+// owner's variable with -1, both sides 0
+
+static bool consensus_agrees( const HQPDistBlock & db )
+{
+ const auto & cons = db.get_consensus();
+ Index k = 0;
+ for( Index r = 0 ; r < db.get_num_robots() ; ++r ) {
+  const auto & cols = db.get_robot_columns( r );
+  for( Index h = db.get_num_own( r ) ; h < cols.size() ; ++h , ++k ) {
+   if( k >= cons.size() )
+    return( false );
+   const auto j = cols[ h ];
+   const auto o = db.get_column_owner()[ j ];
+   const auto & oc = db.get_robot_columns( o );
+   const Index ho = std::find( oc.begin() , oc.end() , j ) - oc.begin();
+   auto lf = dynamic_cast< const LinearFunction * >(
+                                             cons[ k ].get_function() );
+   if( ( ! lf ) || ( lf->get_num_active_var() != 2 ) ||
+       ( lf->get_active_var( 0 ) != & db.get_robot( r )->get_x()[ h ] ) ||
+       ( lf->get_coefficient( 0 ) != 1 ) ||
+       ( lf->get_active_var( 1 ) != & db.get_robot( o )->get_x()[ ho ] ) ||
+       ( lf->get_coefficient( 1 ) != -1 ) ||
+       ( cons[ k ].get_lhs() != 0 ) || ( cons[ k ].get_rhs() != 0 ) )
+    return( false );
+   }
+  }
+ return( k == cons.size() );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_dist( void )
+{
+ std::cout << "HQPDistBlock" << std::endl;
+ const int e0 = errors;
+ const Data D = dist_data();
+ HQPBlock central;
+ load( central , D );
+
+ HQPDistBlock db;
+ db.load( central , 2 , { 0 , 0 , 1 , 1 , 0 } );
+ CHECK( db.get_num_robots() == 2 );
+ CHECK( db.get_num_var() == 5 );
+ CHECK( db.get_num_levels() == 4 );
+ CHECK( db.get_eq_owner() == HQPDistBlock::Vec_Index( { 0 , 1 , 0 , 0 } ) );
+ CHECK( db.get_ineq_owner() == HQPDistBlock::Vec_Index( { 0 , 1 } ) );
+ CHECK( db.get_robot_columns( 0 ) ==
+        HQPDistBlock::Vec_Index( { 0 , 1 , 4 , 2 , 3 } ) );
+ CHECK( db.get_num_own( 0 ) == 3 );
+ CHECK( db.get_robot_columns( 1 ) ==
+        HQPDistBlock::Vec_Index( { 2 , 3 , 0 } ) );
+ CHECK( db.get_num_own( 1 ) == 2 );
+ // x_0 copied by 1, x_2 and x_3 by 0: weights 1/2 on them, 1 on the others
+ CHECK( db.get_robot( 0 )->get_regularization_weights() ==
+        Vec( { 0.5 , 1 , 1 , 0.5 , 0.5 } ) );
+ CHECK( db.get_robot( 1 )->get_regularization_weights() ==
+        Vec( { 0.5 , 0.5 , 0.5 } ) );
+ // the rows of the sub-Blocks, level by level
+ CHECK( ( db.get_robot( 0 )->get_num_eq_rows( 0 ) == 2 ) &&
+        ( db.get_robot( 1 )->get_num_eq_rows( 0 ) == 1 ) &&
+        ( db.get_robot( 0 )->get_num_ineq_rows( 1 ) == 1 ) &&
+        ( db.get_robot( 1 )->get_num_ineq_rows( 1 ) == 1 ) &&
+        ( db.get_robot( 0 )->get_num_eq_rows( 2 ) == 1 ) &&
+        ( db.get_robot( 1 )->get_num_eq_rows( 2 ) == 0 ) );
+ CHECK( db.get_robot( 1 )->get_wi() == Vec( { 2 } ) );
+ CHECK( ( Mat( db.get_robot( 1 )->get_C( 1 ) ) ==
+          ( Mat( 1 , 3 ) << 2 , 3 , 1 ).finished() ) );
+
+ // the abstract representation: no Variable, the consensus rows, an empty
+ // Objective
+ db.generate_abstract_variables();
+ db.generate_abstract_constraints();
+ db.generate_objective();
+ CHECK( db.get_static_variable_groups().empty() );
+ CHECK( db.get_consensus().size() == 3 );
+ CHECK( consensus_agrees( db ) );
+ CHECK( db.get_objective() &&
+        ( db.get_objective()->get_num_active_var() == 0 ) );
+
+ // x and the slacks of the hierarchy are those of the HQPBlock at the same
+ // x, whatever the copies are
+ generate( central );
+ const Vec xv = { 0.3 , -1 , 2 , 0.5 , 4 };
+ db.set_x_values( xv );
+ central.set_x_values( xv );
+ Vec x;
+ db.get_x_values( x );
+ CHECK( x == xv );
+ // the copy of x_2 in owner 0, moved away from it
+ auto & cx = const_cast< ColVariable & >( db.get_robot( 0 )->get_x()[ 3 ] );
+ CHECK( cx.get_value() == 2 );
+ cx.set_value( 9 );
+ for( Index p = 0 ; p < 4 ; ++p ) {
+  Vec v , w , vc , wc;
+  CHECK( db.level_slacks( p , v , w ) == central.level_slacks( p , vc , wc ) );
+  CHECK( ( v == vc ) && ( w == wc ) );
+  }
+
+ // next_level(): the copies take the values of the owners, the distance is
+ // recorded, and the slacks of the coupling rows are those at the owners
+ auto s = new FakeSolver();
+ db.register_Solver( s );
+ db.reset_levels( true );
+ db.next_level();
+ CHECK( db.get_robot( 0 )->get_x()[ 3 ].get_value() == 2 );
+ CHECK( db.get_consensus_residual( 0 ) == 7 );
+ db.next_level();
+ CHECK( db.get_level() == 2 );
+ // owner 1 owns x_0 + 2 x_2 + 3 x_3 <= 1, weight 2: 2 ( 0.3 + 4 + 1.5 - 1 )
+ CHECK( std::abs( db.get_robot( 1 )->get_w()[ 0 ].get_value() - 9.6 ) <
+        1e-12 );
+ // the owner moves x_0: the next level brings the copy of owner 1 to it,
+ // and the slack of level 1 that 1 has fixed rises to 2 ( 2.3 + 5.5 - 1 )
+ const_cast< ColVariable & >( db.get_robot( 0 )->get_x()[ 0 ] ).set_value(
+                                                                         2.3 );
+ db.next_level();
+ CHECK( db.get_robot( 1 )->get_x()[ 2 ].get_value() == 2.3 );
+ CHECK( std::abs( db.get_robot( 1 )->get_w()[ 0 ].get_value() - 13.6 ) <
+        1e-12 );
+ CHECK( db.get_robot( 1 )->get_w()[ 0 ].is_fixed() );
+ CHECK( throws< std::logic_error >( [ & ]() { db.next_level(); } ) );
+
+ // set_slack_values() writes each slack in the sub-Block that owns it
+ db.reset_levels( false );
+ db.set_slack_values( 0 , { 7 , 8 , 9 } , {} );
+ CHECK( ( db.get_robot( 0 )->get_v()[ 0 ].get_value() == 7 ) &&
+        ( db.get_robot( 1 )->get_v()[ 0 ].get_value() == 8 ) &&
+        ( db.get_robot( 0 )->get_v()[ 1 ].get_value() == 9 ) );
+
+ // a change in the pattern is a Modification of the sub-Block that owns
+ // the row; one out of it (x_4 in x_2 - x_3 = 0, which 1 owns and still
+ // owns after, without having x_4) builds the sub-Blocks anew, the
+ // NBModification first
+ s->get_Modification_list().clear();
+ db.set_d( 1 , { 0 , 3 } );
+ CHECK( db.get_robot( 1 )->get_d() == Vec( { 3 } ) );
+ CHECK( ! s->get_Modification_list().empty() );
+ CHECK( std::none_of( s->get_Modification_list().begin() ,
+                      s->get_Modification_list().end() ,
+                      []( const auto & m ) {
+                       return( bool( std::dynamic_pointer_cast<
+                                       const NBModification >( m ) ) ); } ) );
+ s->get_Modification_list().clear();
+ Mat A0 = D.A[ 0 ];
+ A0( 1 , 4 ) = 5;
+ db.set_A( 0 , sparse( A0 ) );
+ CHECK( ( ! s->get_Modification_list().empty() ) &&
+        std::dynamic_pointer_cast< const NBModification >(
+                                 s->get_Modification_list().front() ) );
+ CHECK( db.get_eq_owner()[ 1 ] == 1 );
+ CHECK( db.get_robot_columns( 1 ) ==
+        HQPDistBlock::Vec_Index( { 2 , 3 , 0 , 4 } ) );
+ CHECK( consensus_agrees( db ) );
+ db.unregister_Solvers( true );
+
+ // the netCDF format: the owners of the rows only if given
+ const auto file = ( std::filesystem::temp_directory_path() /
+                     "HQPDistBlock_unit_test.nc4" ).string();
+ for( bool given : { false , true } ) {
+  HQPDistBlock dg;
+  if( given )
+   dg.load( central , 2 , { 0 , 0 , 1 , 1 , 0 } , { 0 , 1 , 0 , 1 } );
+  else
+   dg.load( central , 2 , { 0 , 0 , 1 , 1 , 0 } );
+  dg.serialize( file , eBlockFile );
+  {
+   netCDF::NcFile nf( file , netCDF::NcFile::read );
+   auto g = block_group( nf );
+   CHECK( ! g.getVar( "ColumnOwner" ).isNull() );
+   CHECK( g.getVar( "EqRowOwner" ).isNull() != given );
+   CHECK( g.getVar( "IneqRowOwner" ).isNull() );
+   CHECK( ! g.getGroup( "HQPBlock" ).isNull() );
+   }
+  auto back = dynamic_cast< HQPDistBlock * >( Block::deserialize( file ) );
+  CHECK( back );
+  if( back ) {
+   CHECK( back->get_eq_owner() == dg.get_eq_owner() );
+   CHECK( back->get_ineq_owner() == dg.get_ineq_owner() );
+   for( Index r = 0 ; r < 2 ; ++r )
+    CHECK( back->get_robot_columns( r ) == dg.get_robot_columns( r ) );
+   CHECK( back->get_central().get_b() == central.get_b() );
+   delete back;
+   }
+  // the given owners move the row of level 2 to 1
+  if( given )
+   CHECK( dg.get_robot( 1 )->get_num_eq_rows( 2 ) == 1 );
+  }
+ std::filesystem::remove( file );
+
+ // the errors of load()
+ HQPDistBlock bad;
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  bad.load( central , 2 , { 0 , 0 , 2 , 1 , 0 } ); } ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  bad.load( central , 3 , { 0 , 0 , 1 , 1 , 0 } ); } ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  bad.load( central , 2 , { 0 , 0 , 1 , 1 } ); } ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  bad.load( central , 2 , { 0 , 0 , 1 , 1 , 0 } , { 1 , 1 , 0 , 1 } ); } ) );
+
+ std::ostringstream os;
+ db.print( os );
+ CHECK( os.str().rfind( "HQPDistBlock with 2 sub-Blocks and 4 copies" , 0 )
+        == 0 );
+
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
 /*--------------------------------------------------------------------------*/
 
 int main( int argc , char ** argv )
@@ -951,6 +1309,9 @@ int main( int argc , char ** argv )
  test_modifications();
  test_netcdf();
  test_print();
+ test_reg_weights();
+ test_refix();
+ test_dist();
 
  std::cout << ( errors ? "HQPBlock: FAILED" : "HQPBlock: all tests passed" )
            << std::endl;
