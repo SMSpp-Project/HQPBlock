@@ -20,10 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HQPDistBlock`, the hierarchical QP split among owners of its columns (a
   sub-Block `HQPBlock` for each owner, with copies of the variables of the
   others in its rows, and the consensus rows in the root, with the
-  structure `kConsensus`; the coupling rows in the root, and their parts in
-  the sub-Blocks bounded by its variables, with `kBenders`, chosen by
-  `set_structure()`), exactly the centralized hierarchy, so that it can be
-  solved by decomposition, and its netCDF format
+  structure `kConsensus`; the coupling rows in the root, with a copy in the
+  root of each variable of an equality coupling row and the parts of the
+  other variables in the sub-Blocks bounded by its variables, with
+  `kBenders`, chosen by `set_structure()`), exactly the centralized
+  hierarchy, so that it can be solved by decomposition, and its netCDF
+  format
 - `HQPSolver`, which solves the levels of an `HQPBlock` one after the other,
   each with an inner Solver of its own taken from the same
   `BlockSolverConfig`, so that an inner Solver that re-optimizes (e.g.,

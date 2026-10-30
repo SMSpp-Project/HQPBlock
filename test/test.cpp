@@ -58,10 +58,11 @@
  *
  * - the same HQPDistBlock with the structure kBenders, read from
  *   structure-benders.txt: the coupling rows and their slacks in the root,
- *   the t and the link rows of each owner, their relaxation and the slacks
- *   of the coupling rows along the levels, a change of the data in and out
- *   of the pattern of a coupling row, and the structure refused once the
- *   abstract representation is there.
+ *   the t, the y and the link rows of each owner, their relaxation and the
+ *   slacks of the coupling rows along the levels, a change of the data in
+ *   and out of the pattern of a coupling row (an inequality and an equality
+ *   one), and the structure refused once the abstract representation is
+ *   there.
  *
  * The HQPSolver, which needs an inner Solver from another module, is tested
  * by the suite HQPBlock of the system tests of SMS++.
@@ -1367,26 +1368,35 @@ static void test_dist_benders( void )
  db.generate_abstract_variables();
  db.generate_abstract_constraints();
  db.generate_objective();
+ // the y of x_3 and x_4, the t of the inequality coupling rows in the
+ // other columns: x_1 and x_2 of x_1 + x_2 <= 0, x_0 and x_2 of the other
  const auto & t = * db.get_static_variable_v< ColVariable >( "t" );
  const auto & sl = * db.get_static_variable_v< ColVariable >( "s" );
- CHECK( ( t.size() == 6 ) && ( sl.size() == 3 ) );
+ const auto & y = * db.get_static_variable_v< ColVariable >( "y" );
+ CHECK( ( t.size() == 4 ) && ( sl.size() == 3 ) && ( y.size() == 2 ) );
  CHECK( ( ! sl[ 0 ].is_positive() ) && sl[ 1 ].is_positive() );
  const auto & cr = * db.get_static_constraint_v< FRowConstraint >(
                                                                "coupling" );
  const double Inf_d = Inf< double >();
- CHECK( row_is( cr[ 0 ] , { { & sl[ 0 ] , -1 } , { & t[ 0 ] , 1 } ,
-                            { & t[ 1 ] , 1 } } , 2 , 2 ) );
- CHECK( row_is( cr[ 2 ] , { { & sl[ 2 ] , -1 } , { & t[ 4 ] , 2 } ,
-                            { & t[ 5 ] , 2 } } , - Inf_d , 2 ) );
+ CHECK( row_is( cr[ 0 ] , { { & sl[ 0 ] , -1 } , { & y[ 0 ] , 1 } ,
+                            { & y[ 1 ] , 1 } } , 2 , 2 ) );
+ CHECK( row_is( cr[ 2 ] , { { & sl[ 2 ] , -1 } , { & y[ 0 ] , 6 } ,
+                            { & t[ 2 ] , 2 } , { & t[ 3 ] , 2 } } ,
+                - Inf_d , 2 ) );
+ // the parts of the inequality rows first, then the links of the y
  const auto & x0 = db.get_robot( 0 )->get_x();
  const auto & x1 = db.get_robot( 1 )->get_x();
  auto & l0 = db.get_robot( 0 )->get_link_rows();
  auto & l1 = db.get_robot( 1 )->get_link_rows();
  CHECK( ( l0.size() == 3 ) && ( l1.size() == 3 ) );
- CHECK( row_is( l0.front() , { { & x0[ 2 ] , 1 } , { & t[ 0 ] , -1 } } ,
+ CHECK( row_is( l0.front() , { { & x0[ 1 ] , 1 } , { & t[ 0 ] , -1 } } ,
+                - Inf_d , 0 ) );
+ CHECK( row_is( l0.back() , { { & x0[ 2 ] , 1 } , { & y[ 1 ] , -1 } } ,
                 0 , 0 ) );
- CHECK( row_is( l1.back() , { { & x1[ 0 ] , 2 } , { & x1[ 1 ] , 3 } ,
-                              { & t[ 5 ] , -1 } } , - Inf_d , 0 ) );
+ CHECK( row_is( * std::next( l1.begin() ) ,
+                { { & x1[ 0 ] , 2 } , { & t[ 3 ] , -1 } } , - Inf_d , 0 ) );
+ CHECK( row_is( l1.back() , { { & x1[ 1 ] , 1 } , { & y[ 0 ] , -1 } } ,
+                0 , 0 ) );
  // at level 0 the link rows of levels 1 and 2 are relaxed
  for( const auto & l : { & l0 , & l1 } )
   for( const auto & row : *l )
@@ -1400,13 +1410,16 @@ static void test_dist_benders( void )
  db.set_x_values( { 0.3 , -1 , 2 , 0.5 , 4 } );
  db.next_level();
  CHECK( ( ! cr[ 1 ].is_relaxed() ) && ( ! sl[ 1 ].is_fixed() ) );
- CHECK( ! l0.back().is_relaxed() );
- CHECK( l0.front().is_relaxed() );
+ CHECK( ! l0.front().is_relaxed() );
+ // the y of x_4 is only in the row of level 2, that of x_3 also in level 1
+ CHECK( l0.back().is_relaxed() && ( ! l1.back().is_relaxed() ) );
  db.next_level();
  // s_2 fixed at the residual at the x of the owners, 2 ( 0.3 + 4 + 1.5 - 1 )
  CHECK( sl[ 2 ].is_fixed() &&
         ( std::abs( sl[ 2 ].get_value() - 9.6 ) < 1e-12 ) );
- CHECK( ! l0.front().is_relaxed() );
+ CHECK( ! l0.back().is_relaxed() );
+ // the y have the values of the owners
+ CHECK( ( y[ 0 ].get_value() == 0.5 ) && ( y[ 1 ].get_value() == 4 ) );
  for( Index p = 0 ; p < 4 ; ++p ) {
   Vec v , w , vc , wc;
   generate( central );
@@ -1420,16 +1433,26 @@ static void test_dist_benders( void )
  db.set_d( 1 , { 0 , 3 } );
  CHECK( cr[ 2 ].get_rhs() == 6 );
  Mat C1 = D.C[ 1 ];
+ C1( 1 , 2 ) = 5;
  C1( 1 , 3 ) = 4;
  db.set_C( 1 , sparse( C1 ) );
- CHECK( row_is( l1.back() , { { & x1[ 0 ] , 2 } , { & x1[ 1 ] , 4 } ,
-                              { & t[ 5 ] , -1 } } , - Inf_d , 0 ) );
+ CHECK( row_is( * std::next( l1.begin() ) ,
+                { { & x1[ 0 ] , 5 } , { & t[ 3 ] , -1 } } , - Inf_d , 0 ) );
+ CHECK( row_is( cr[ 2 ] , { { & sl[ 2 ] , -1 } , { & y[ 0 ] , 8 } ,
+                            { & t[ 2 ] , 2 } , { & t[ 3 ] , 2 } } ,
+                - Inf_d , 6 ) );
+ // and the coefficients of an equality one, on the y
+ Mat A2 = D.A[ 2 ];
+ A2( 0 , 4 ) = 3;
+ db.set_A( 2 , sparse( A2 ) );
+ CHECK( row_is( cr[ 0 ] , { { & sl[ 0 ] , -1 } , { & y[ 0 ] , 1 } ,
+                            { & y[ 1 ] , 3 } } , 2 , 2 ) );
  CHECK( std::none_of( s->get_Modification_list().begin() ,
                       s->get_Modification_list().end() ,
                       []( const auto & m ) {
                        return( bool( std::dynamic_pointer_cast<
                                        const NBModification >( m ) ) ); } ) );
- // out of it: x_4 in x_1 + x_2 <= 0 changes the part of owner 0
+ // out of it: x_4, which has a y, in x_1 + x_2 <= 0
  s->get_Modification_list().clear();
  C1( 0 , 4 ) = 1;
  db.set_C( 1 , sparse( C1 ) );
@@ -1437,6 +1460,14 @@ static void test_dist_benders( void )
         std::dynamic_pointer_cast< const NBModification >(
                                  s->get_Modification_list().front() ) );
  CHECK( db.get_robot( 0 )->get_link_rows().size() == 3 );
+ // and so does a column with no y in an equality one
+ s->get_Modification_list().clear();
+ A2( 0 , 2 ) = 1;
+ db.set_A( 2 , sparse( A2 ) );
+ CHECK( ( ! s->get_Modification_list().empty() ) &&
+        std::dynamic_pointer_cast< const NBModification >(
+                                 s->get_Modification_list().front() ) );
+ CHECK( db.get_static_variable_v< ColVariable >( "y" )->size() == 3 );
  db.unregister_Solvers( true );
 
  // the structure cannot change once the abstract representation is there

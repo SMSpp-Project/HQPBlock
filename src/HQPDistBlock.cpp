@@ -299,8 +299,10 @@ void HQPDistBlock::generate_abstract_variables( Configuration * stvv )
     v_s[ c ].is_fixed( true , eNoMod );
     }
    }
+  v_y = std::vector< ColVariable >( v_ycol.size() );
   add_static_variable( v_t , "t" );
   add_static_variable( v_s , "s" );
+  add_static_variable( v_y , "y" );
   }
 
  AR |= HasVar;
@@ -336,7 +338,8 @@ void HQPDistBlock::generate_abstract_constraints( Configuration * stcc )
                             : f_central.get_ineq_start( level_of( eq , i ) ) );
    LinearFunction::v_coeff_pair cf;
    for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
-    if( v_col_owner[ it.col() ] == r )
+    if( ( v_col_owner[ it.col() ] == r ) &&
+        ( v_ypos[ it.col() ] == Inf< Index >() ) )
      cf.emplace_back( var( r , it.col() ) , it.value() );
    cf.emplace_back( & v_t[ k ] , -1.0 );
    links[ r ].emplace_back();
@@ -350,6 +353,19 @@ void HQPDistBlock::generate_abstract_constraints( Configuration * stcc )
     }
    v_link[ k ] = std::prev( links[ r ].end() );
    }
+  v_ylink.assign( v_ycol.size() , {} );
+  for( Index k = 0 ; k < v_ycol.size() ; ++k ) {
+   const Index j = v_ycol[ k ];
+   const Index r = v_col_owner[ j ];
+   LinearFunction::v_coeff_pair cf;
+   cf.emplace_back( var( r , j ) , 1.0 );
+   cf.emplace_back( & v_y[ k ] , -1.0 );
+   links[ r ].emplace_back();
+   auto & row = links[ r ].back();
+   row.set_function( new LinearFunction( std::move( cf ) ) , eNoMod );
+   row.set_both( 0 , eNoMod );
+   v_ylink[ k ] = std::prev( links[ r ].end() );
+   }
   for( Index r = 0 ; r < f_R ; ++r ) {
    auto rb = get_robot( r );
    rb->add_dynamic_constraints( rb->get_link_rows() , links[ r ] , eNoMod );
@@ -362,6 +378,13 @@ void HQPDistBlock::generate_abstract_constraints( Configuration * stcc )
    const double wg = eq ? f_central.get_we()[ i ] : f_central.get_wi()[ i ];
    LinearFunction::v_coeff_pair cf;
    cf.emplace_back( & v_s[ c ] , -1.0 );
+   const Index p = level_of( eq , i );
+   const auto & M = eq ? f_central.get_A( p ) : f_central.get_C( p );
+   const Index h = i - ( eq ? f_central.get_eq_start( p )
+                            : f_central.get_ineq_start( p ) );
+   for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+    if( v_ypos[ it.col() ] < Inf< Index >() )
+     cf.emplace_back( & v_y[ v_ypos[ it.col() ] ] , wg * it.value() );
    for( Index k = v_cpl_t[ c ] ; k < v_cpl_t[ c + 1 ] ; ++k )
     cf.emplace_back( & v_t[ k ] , wg );
    auto & row = v_cplr[ c ];
@@ -471,6 +494,11 @@ void HQPDistBlock::next_level( double tol , ModParam issueMod )
   }
  v_delta.resize( f_level + 1 , 0 );
  v_delta[ f_level ] = delta;
+
+ // and so do the y of kBenders, whose link rows a Solver may leave only
+ // close to the x
+ for( Index k = 0 ; k < v_y.size() ; ++k )
+  v_y[ k ].set_value( x[ v_ycol[ k ] ] );
 
  // the rows of the fixed levels are satisfied at the values of the owners
  for( Index r = 0 ; r < f_R ; ++r )
@@ -729,7 +757,9 @@ void HQPDistBlock::guts_of_destructor( void )
 
  reset_static_variables();
  v_link.clear();
+ v_ylink.clear();
  v_t.clear();
+ v_y.clear();
  v_s.clear();
 
  AR = 0;
@@ -815,11 +845,16 @@ void HQPDistBlock::build( void )
    }
   }
 
- // the coupling rows of kBenders, the equality ones first, and their t,
- // one for each owner with entries in the row, in increasing order
+ // the coupling rows of kBenders, the equality ones first; the columns of
+ // the equality ones have their y, and each inequality one has its t, one
+ // for each owner with entries in the row in columns with no y, in
+ // increasing order
  v_cpl.clear();
  v_piece.clear();
  v_cpl_t.assign( 1 , 0 );
+ v_ypos.assign( n , Inf< Index >() );
+ v_ycol.clear();
+ v_ylev.clear();
  for( int k = 0 ; k < 2 ; ++k ) {
   const bool eq = ( k == 0 );
   auto & cpl = eq ? v_eq_cpl : v_in_cpl;
@@ -831,15 +866,42 @@ void HQPDistBlock::build( void )
    const auto & M = eq ? f_central.get_A( p ) : f_central.get_C( p );
    const Index h = i - ( eq ? f_central.get_eq_start( p )
                             : f_central.get_ineq_start( p ) );
-   std::vector< bool > in( f_R , false );
-   for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
-    in[ v_col_owner[ it.col() ] ] = true;
-   for( Index r = 0 ; r < f_R ; ++r )
-    if( in[ r ] )
-     v_piece.emplace_back( v_cpl.size() , r );
+   if( eq ) {
+    for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+     if( v_ypos[ it.col() ] == Inf< Index >() )
+      v_ypos[ it.col() ] = 0;
+    }
+   else {
+    std::vector< bool > in( f_R , false );
+    for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+     if( v_ypos[ it.col() ] == Inf< Index >() )
+      in[ v_col_owner[ it.col() ] ] = true;
+    for( Index r = 0 ; r < f_R ; ++r )
+     if( in[ r ] )
+      v_piece.emplace_back( v_cpl.size() , r );
+    }
    v_cpl.emplace_back( eq , i );
    v_cpl_t.push_back( v_piece.size() );
    }
+  }
+ // the y in increasing order of column, each with the highest level of
+ // the coupling rows the column has an entry in
+ for( Index j = 0 ; j < n ; ++j )
+  if( v_ypos[ j ] < Inf< Index >() ) {
+   v_ypos[ j ] = v_ycol.size();
+   v_ycol.push_back( j );
+   v_ylev.push_back( P );
+   }
+ for( const auto & [ eq , i ] : v_cpl ) {
+  const Index p = level_of( eq , i );
+  const auto & M = eq ? f_central.get_A( p ) : f_central.get_C( p );
+  const Index h = i - ( eq ? f_central.get_eq_start( p )
+                           : f_central.get_ineq_start( p ) );
+  for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+   if( v_ypos[ it.col() ] < Inf< Index >() ) {
+    auto & lv = v_ylev[ v_ypos[ it.col() ] ];
+    lv = std::min( lv , p );
+    }
   }
  v_cpl_state.assign( P , char( HQPBlock::kFree ) );
  v_cpl_obj.assign( P , 0 );
@@ -972,29 +1034,51 @@ void HQPDistBlock::update_rows( bool eq , Index p , ModParam issueMod )
     ok = ! couples_row( Mc , h , v_col_owner );
     continue;
     }
+   // the columns with a y are on it, in the same order as in the row
+   // there (an equality row has only such ones), the others in the parts
+   // of their owners, with the t after the y in the row
+   const auto lf = ( AR & HasCns ) ? static_cast< const LinearFunction * >(
+                                       v_cplr[ c ].get_function() ) : nullptr;
+   Index a = 1;
+   for( SparseMatrix::InnerIterator it( Mc , h ) ; ok && it ; ++it ) {
+    const Index y = v_ypos[ it.col() ];
+    if( y == Inf< Index >() ) {
+     ok = ! eq;
+     continue;
+     }
+    ok = ( ! lf ) || ( ( a < lf->get_num_active_var() ) &&
+                       ( lf->get_active_var( a ) == & v_y[ y ] ) );
+    ++a;
+    }
+   if( lf && ( a + v_cpl_t[ c + 1 ] - v_cpl_t[ c ] !=
+               lf->get_num_active_var() ) )
+    ok = false;
    for( Index k = v_cpl_t[ c ] ; ok && ( k < v_cpl_t[ c + 1 ] ) ; ++k ) {
     const Index r = v_piece[ k ].second;
     Vec_Index cols;
     Vec_double cf;
     for( SparseMatrix::InnerIterator it( Mc , h ) ; it ; ++it )
-     if( v_col_owner[ it.col() ] == r ) {
+     if( ( v_col_owner[ it.col() ] == r ) &&
+         ( v_ypos[ it.col() ] == Inf< Index >() ) ) {
       cols.push_back( it.col() );
       cf.push_back( it.value() );
       }
     if( AR & HasCns ) {
-     const auto lf = static_cast< const LinearFunction * >(
+     const auto lk = static_cast< const LinearFunction * >(
                                         v_link[ k ]->get_function() );
-     if( lf->get_num_active_var() != cols.size() + 1 )
+     if( lk->get_num_active_var() != cols.size() + 1 )
       ok = false;
-     for( Index a = 0 ; ok && ( a < cols.size() ) ; ++a )
-      if( lf->get_active_var( a ) !=
-          & get_robot( r )->get_x()[ v_pos[ r ][ cols[ a ] ] ] )
+     for( Index b = 0 ; ok && ( b < cols.size() ) ; ++b )
+      if( lk->get_active_var( b ) !=
+          & get_robot( r )->get_x()[ v_pos[ r ][ cols[ b ] ] ] )
        ok = false;
      }
     piece_coef.emplace_back( k , std::move( cf ) );
     }
-   // and no other owner has entries in it
+   // and no other owner has entries in it out of the y
    for( SparseMatrix::InnerIterator it( Mc , h ) ; ok && it ; ++it ) {
+    if( v_ypos[ it.col() ] < Inf< Index >() )
+     continue;
     bool found = false;
     for( Index k = v_cpl_t[ c ] ; k < v_cpl_t[ c + 1 ] ; ++k )
      found = found || ( v_piece[ k ].second == v_col_owner[ it.col() ] );
@@ -1060,7 +1144,17 @@ void HQPDistBlock::update_rows( bool eq , Index p , ModParam issueMod )
   auto lf = static_cast< LinearFunction * >( row.get_function() );
   Vec_double chg;
   LinearFunction::Subset nms;
-  for( Index a = 1 ; a < lf->get_num_active_var() ; ++a )
+  // the y with the coefficients of the row, then the t with the weight
+  Index a = 1;
+  for( SparseMatrix::InnerIterator it( Mc , h ) ; it ; ++it )
+   if( v_ypos[ it.col() ] < Inf< Index >() ) {
+    if( lf->get_coefficient( a ) != wg * it.value() ) {
+     chg.push_back( wg * it.value() );
+     nms.push_back( a );
+     }
+    ++a;
+    }
+  for( ; a < lf->get_num_active_var() ; ++a )
    if( lf->get_coefficient( a ) != wg ) {
     chg.push_back( wg );
     nms.push_back( a );
@@ -1177,6 +1271,11 @@ void HQPDistBlock::relax_links( ModParam issueMod )
   const bool relax = ( level_of( eq , i ) > f_level );
   if( v_link[ k ]->is_relaxed() != relax )
    v_link[ k ]->relax( relax , issueMod );
+  }
+ for( Index k = 0 ; k < v_ycol.size() ; ++k ) {
+  const bool relax = ( v_ylev[ k ] > f_level );
+  if( v_ylink[ k ]->is_relaxed() != relax )
+   v_ylink[ k ]->relax( relax , issueMod );
   }
  }
 

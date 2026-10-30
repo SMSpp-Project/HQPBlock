@@ -225,6 +225,19 @@ class HQPSolver : public Solver
    s->add_Modification( mod );
   }
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// sets the log, which is also that of the inner Solver of every level
+ /** Sets the log of this HQPSolver and of the inner Solver of every level,
+  * both those already there and those created afterwards [see
+  * get_inner_Solver()]. */
+
+ void set_log( std::ostream * log_stream = nullptr ) override {
+  Solver::set_log( log_stream );
+  for( auto s : v_inner )
+   if( s )
+    s->set_log( log_stream );
+  }
+
 /*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
  /// solves the levels of the HQPBlock one after the other
  /** Solves the levels of the HQPBlock one after the other as described in

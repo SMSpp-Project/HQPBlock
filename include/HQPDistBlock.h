@@ -109,30 +109,50 @@ namespace SMSpp_di_unipi_it
  * The other one, kBenders, is that of a Benders decomposition [see
  * set_structure()]: the sub-Block of an owner has only the columns it owns
  * and the rows all of whose entries are in them (the local rows), while each
- * coupling row h, of level q, is in the HQPDistBlock, as
+ * coupling row h, of level q, is in the HQPDistBlock, with its slack \f$ s_h
+ * \f$, a ColVariable of the HQPDistBlock. Each column j with an entry in an
+ * equality coupling row has a copy \f$ y_j \f$, a ColVariable of the
+ * HQPDistBlock, with the row \f$ x_j - y_j = 0 \f$ in the group "link" of
+ * the sub-Block of the owner of j [see HQPBlock::get_link_rows()], and it
+ * enters every coupling row through it. An equality row is then
  *
  * \f[
- *   W_h \big( \textstyle\sum_r t_{hr} \big) - s_h \leq W_h d_h
- *   \qquad ( \, = W_h b_h \mbox{ for an equality row} \, ) \;\;,
+ *   W_h a_h y - s_h = W_h b_h \;\;,
  * \f]
  *
- * with its slack \f$ s_h \f$, a ColVariable of the HQPDistBlock, and one
- * ColVariable \f$ t_{hr} \f$ for each owner r with entries in the row,
- * which bounds the part \f$ a_{hr} x_r \f$ of the row in the columns of r
- * by the row \f$ a_{hr} x_r - t_{hr} \leq 0 \f$ (\f$ = 0 \f$ for an
- * equality row) in the group "link" of the sub-Block of r [see
- * HQPBlock::get_link_rows()]. With \f$ t_{hr} = a_{hr} x_r \f$ these are the
- * coupling rows of the centralized hierarchy, hence the problem of each level
- * is again exactly that of the centralized one. The t and the s are the
- * complicating Variable of a Benders decomposition, e.g., by a
- * BendersDecompositionSolver, and the problem of each owner at given t is a
- * convex QP; that of an owner with no coupling row depends on no t, which a
- * Benders decomposition may not accept. The HQPDistBlock moves the slacks of
- * its coupling rows from a level to the next one as an HQPBlock does with
- * its own [see HQPBlock::next_level()], the slacks of a level being fixed at
+ * and an inequality one, denoting by \f$ a^y_h y \f$ its part in the
+ * columns with a copy, is
+ *
+ * \f[
+ *   W_h \big( a^y_h y + \textstyle\sum_r t_{hr} \big) - s_h \leq W_h d_h
+ *   \;\;,
+ * \f]
+ *
+ * with one ColVariable \f$ t_{hr} \f$ for each owner r with entries in the
+ * row in columns with no copy, which bounds the part \f$ a_{hr} x_r \f$ of
+ * the row in these columns by the row \f$ a_{hr} x_r - t_{hr} \leq 0 \f$ in
+ * the group "link" of the sub-Block of r. Written on the t, the equality
+ * rows would make the
+ * problem of r infeasible at about any t: when they are more than the
+ * columns of r, their parts \f$ a_{hr} x_r = t_{hr} \f$ can only take the
+ * values in a subspace, which the t chosen by the master are not in, while
+ * the problem of r at given t and y is feasible if its local rows are, as
+ * a part in columns with a copy would not be, all of them being fixed. With
+ * \f$ t_{hr} =
+ * a_{hr} x_r \f$ and \f$ y = x \f$ these are the coupling rows of the
+ * centralized hierarchy, hence the problem of each level is again exactly
+ * that of the centralized one. The t, the y and the s are the complicating
+ * Variable of a Benders decomposition, e.g., by a
+ * BendersDecompositionSolver, and the problem of each owner at given t and
+ * y is a convex QP; that of an owner with no coupling row depends on no t
+ * and no y, which a Benders decomposition may not accept. The HQPDistBlock
+ * moves the slacks of its coupling rows from a level to the next one as an
+ * HQPBlock does with its own [see HQPBlock::next_level()], the slacks of a
+ * level being fixed at
  * their values at the x of the owners, and it relaxes the link rows of a
- * coupling row of level q as long as the current level is above q, where
- * the row constrains nothing.
+ * coupling row of level q (of a y, of all those of its column)
+ * as long as the current level is above q, where the row constrains
+ * nothing.
  *
  * The data can be changed with the methods of the class [see set_b() and
  * the others], which change those of the sub-Blocks by Modification; a
@@ -240,10 +260,12 @@ class HQPDistBlock : public HQPLevelBlock
  /// generates the ColVariable of the sub-Blocks, and those of kBenders
  /** Generates the ColVariable of the sub-Blocks; with kBenders also those
   * of the HQPDistBlock, the \f$ t \f$ (free, named "t", those of each
-  * coupling row one after the other, in the order of the owners) and the
-  * slacks \f$ s \f$ of the coupling rows (named "s", the equality ones free
-  * and the inequality ones non-negative, in the order of the rows, the
-  * equality ones first). With kConsensus the HQPDistBlock has none. */
+  * inequality coupling row one after the other, in the order of the
+  * owners), the slacks \f$ s \f$ of the coupling rows (named "s", the
+  * equality ones free and the inequality ones non-negative, in the order of
+  * the rows, the equality ones first) and the \f$ y \f$ (free, named "y",
+  * one for each column with an entry in an equality coupling row, in the
+  * order of the columns). With kConsensus the HQPDistBlock has none. */
 
  void generate_abstract_variables( Configuration * stvv = nullptr )
   override;
@@ -257,7 +279,9 @@ class HQPDistBlock : public HQPLevelBlock
   * x^{(r)}_j \f$ (coefficient 1) and the \f$ x_j \f$ of the owner of j
   * (coefficient -1), and both sides 0. With kBenders, those of the coupling
   * rows (named "coupling", in the order of the s), and the link rows of each
-  * coupling row in the sub-Blocks of its owners [see the general notes]. */
+  * inequality coupling row in the sub-Blocks of its owners, then those of
+  * each y in the sub-Block of the owner of its column [see the general
+  * notes]. */
 
  void generate_abstract_constraints( Configuration * stcc = nullptr )
   override;
@@ -632,6 +656,14 @@ class HQPDistBlock : public HQPLevelBlock
 
  /// for each t, the link row of its owner
  std::vector< std::list< FRowConstraint >::iterator > v_link;
+
+ std::vector< ColVariable > v_y;      ///< the y of kBenders
+ Vec_Index v_ycol;                    ///< the column of each y
+ Vec_Index v_ypos;                    ///< the y of each column, or Inf
+ Vec_Index v_ylev;                    ///< the highest level of each y
+
+ /// for each y, the link row of the owner of its column
+ std::vector< std::list< FRowConstraint >::iterator > v_ylink;
 
  std::vector< char > v_cpl_state;     ///< the level_state of each level
  std::vector< char > v_cpl_obj;       ///< slacks of each level in Objective
