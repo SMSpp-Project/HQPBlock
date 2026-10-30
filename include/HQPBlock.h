@@ -132,6 +132,17 @@ class HQPLevelBlock : public Block
                           ModParam issueMod = eModBlck ) = 0;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// multiplies the whole Objective by \p s > 0
+ /** Multiplies the whole Objective (the slacks, the regularization and its
+  * constant) by \p s, which changes no minimizer of any level and only the
+  * scale of its value, e.g., for an inner Solver whose tolerances are
+  * absolute to see a level of value about 1 [see HQPSolver]; the values of
+  * the levels [see level_slacks()] are not scaled. */
+
+ virtual void set_objective_scale( double s ,
+                                   ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// writes in \p x the current values of the \f$ n \f$ variables
 
  virtual void get_x_values( Vec_double & x ) const = 0;
@@ -719,6 +730,12 @@ class HQPBlock : public HQPLevelBlock
  void set_center( const Vec_double & c ,
                   ModParam issueMod = eModBlck ) override;
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// multiplies the whole Objective by \p s > 0 [see HQPLevelBlock]
+
+ void set_objective_scale( double s ,
+                           ModParam issueMod = eModBlck ) override;
+
 /*----------------------- Methods for handling Solution --------------------*/
  /// returns a ColVariableSolution of the ColVariable of the HQPBlock
  /** Returns a ColVariableSolution of all the ColVariable of the HQPBlock
@@ -832,6 +849,7 @@ class HQPBlock : public HQPLevelBlock
  std::vector< Index > v_in_start;   ///< first inequality row of each level
 
  double f_eps;                      ///< weight of the regularization
+ double f_scale = 1;                ///< factor of the whole Objective
  Vec_double v_rw;                   ///< weights of the variables in it
  Vec_double v_center;               ///< center of the regularization
 

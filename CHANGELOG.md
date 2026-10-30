@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regularization, whose constant is in the `Objective`, a dynamic group of
   rows `link` that an ancestor fills, and its netCDF format
 - `HQPLevelBlock`, the interface of the levels of a hierarchical QP that
-  `HQPSolver` uses, which `HQPBlock` and `HQPDistBlock` implement
+  `HQPSolver` uses, which `HQPBlock` and `HQPDistBlock` implement, with the
+  scale of the whole `Objective` (`set_objective_scale()`), which changes no
+  minimizer
 - `HQPDistBlock`, the hierarchical QP split among owners of its columns (a
   sub-Block `HQPBlock` for each owner, with copies of the variables of the
   others in its rows, and the consensus rows in the root, with the
@@ -25,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other variables in the sub-Blocks bounded by its variables, with
   `kBenders`, chosen by `set_structure()`), exactly the centralized
   hierarchy, so that it can be solved by decomposition, and its netCDF
-  format
+  format; with `kBenders` the `Objective` of the root has all its
+  Variable, and the root starts each level at the solution of the previous
+  one
 - `HQPSolver`, which solves the levels of an `HQPBlock` one after the other,
   each with an inner Solver of its own taken from the same
   `BlockSolverConfig`, so that an inner Solver that re-optimizes (e.g.,
@@ -33,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the previous `compute()`, e.g., the previous step of a Model Predictive
   Control; `get_elapsed_iterations()` sums their iterations, the inner
   Solvers get its log and, after an NBModification of the Block, are
-  created anew
+  created anew; with `intLevelScale` the `Objective` of each level is
+  multiplied by the inverse of its value, so that the inner Solver sees a
+  level of value about 1
 - `tools/npz2nc4.py`, from `.npz` to the netCDF format of `HQPBlock`
 - `tools/ho_mpc_radial.py`, which writes as `.npz` the hierarchical QPs of
   the centralized Model Predictive Control of the radial switching scenario

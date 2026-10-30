@@ -453,6 +453,13 @@ class HQPDistBlock : public HQPLevelBlock
                   ModParam issueMod = eModBlck ) override;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// multiplies the Objective of all the sub-Blocks, and the slacks of the
+ /// coupling rows of kBenders, by \p s > 0 [see HQPLevelBlock]
+
+ void set_objective_scale( double s ,
+                           ModParam issueMod = eModBlck ) override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// writes in \p x the current values of the variables of the owners
 
  void get_x_values( Vec_double & x ) const override;
@@ -602,6 +609,11 @@ class HQPDistBlock : public HQPLevelBlock
  void relax_links( ModParam issueMod );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// the y, the t and the free slacks of kBenders at the x of the owners
+
+ void center_root( void );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// the level of a row of one kind of the centralized hierarchy
 
  [[nodiscard]] Index level_of( bool eq , Index i ) const;
@@ -653,6 +665,7 @@ class HQPDistBlock : public HQPLevelBlock
  std::vector< ColVariable > v_t;      ///< the t of kBenders
  std::vector< ColVariable > v_s;      ///< the slacks of the coupling rows
  std::vector< FRowConstraint > v_cplr;  ///< the coupling rows
+ double f_scale = 1;                    ///< factor of the Objective
 
  /// for each t, the link row of its owner
  std::vector< std::list< FRowConstraint >::iterator > v_link;

@@ -82,6 +82,9 @@ void HQPSolver::set_par( idx_type par , int value )
   case( intRelaxLower ):
    f_relax = value ? 1 : 0;
    break;
+  case( intLevelScale ):
+   f_scale = value ? 1 : 0;
+   break;
   case( intLogVerb ):
    f_verb = value;
    break;
@@ -145,6 +148,8 @@ int HQPSolver::compute( bool changedvars )
  v_xl.clear();
  v_vl.clear();
  v_wl.clear();
+ v_prev = std::move( v_obj );
+ v_obj.clear();
  v_val.clear();
 
  // the inner Solvers dropped by an NBModification are created anew
@@ -187,8 +192,40 @@ int HQPSolver::compute( bool changedvars )
    v_inner.push_back( new_inner() );
 
   auto inner = v_inner[ p ];
-  const int st = inner->compute();
+
+  // the scale of the level, from the value of its Objective (the slacks
+  // and the regularization) in the previous compute()
+  const auto scale_of = []( double v ) {
+   return( ( v > 1e-10 ) && ( v < Inf< double >() ) ? 1 / v : 1.0 );
+   };
+  const bool known = ( p < v_prev.size() );
+  double scale = 1;
+  if( f_scale ) {
+   scale = known ? scale_of( v_prev[ p ] ) : 1.0;
+   lock_block();
+   hb->set_objective_scale( scale );
+   unlock_block();
+   }
+
+  int st = inner->compute();
   f_iter += inner->get_elapsed_iterations();
+
+  // the first time, a level of small value is solved again at its scale,
+  // starting from the solution just found
+  if( f_scale && ( ! known ) && ( st >= kOK ) && ( st < kError ) &&
+      inner->has_var_solution() ) {
+   const bool again = ( scale_of( inner->get_ub() ) > 10 );
+   if( again ) {
+    scale = scale_of( inner->get_ub() );
+    lock_block();
+    hb->set_objective_scale( scale );
+    unlock_block();
+    }
+   if( again ) {
+    st = inner->compute();
+    f_iter += inner->get_elapsed_iterations();
+    }
+   }
   v_stat.push_back( st );
   if( ( st < kOK ) || ( st >= kError ) || ( ! inner->has_var_solution() ) )
   {
@@ -200,6 +237,9 @@ int HQPSolver::compute( bool changedvars )
    }
   if( ( st != kOK ) && ( f_status == kOK ) )
    f_status = st;
+
+  if( f_scale )
+   v_obj.push_back( inner->get_ub() / scale );
 
   lock_block();
   inner->get_var_solution();
@@ -222,6 +262,12 @@ int HQPSolver::compute( bool changedvars )
    hb->next_level( f_tol );
    }
   v_xl.push_back( std::move( x ) );
+  unlock_block();
+  }
+
+ if( f_scale ) {
+  lock_block();
+  hb->set_objective_scale( 1 );
   unlock_block();
   }
 

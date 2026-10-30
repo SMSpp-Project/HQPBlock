@@ -402,6 +402,9 @@ void HQPDistBlock::generate_abstract_constraints( Configuration * stcc )
 
   AR |= HasCns;
   relax_links( eNoMod );
+  // the root starts where its rows hold, which a Solver that starts from
+  // the values of the Variable (e.g., a bundle-type master) needs
+  center_root();
   return;
   }
 
@@ -432,11 +435,19 @@ void HQPDistBlock::generate_objective( Configuration * objc )
 
  if( f_struct == kBenders ) {
   generate_abstract_variables();
+  // all the Variable of the root, in their order, those that are not a
+  // slack with a zero term: a bundle-type master reads it as the quadratic
+  // part of its 0-th component only if it is dense in them
   DQuadFunction::v_coeff_triple tr;
+  for( auto & t : v_t )
+   tr.emplace_back( & t , 0.0 , 0.0 );
   for( Index c = 0 ; c < v_cpl.size() ; ++c )
    tr.emplace_back( & v_s[ c ] , 0.0 ,
                     v_cpl_obj[ level_of( v_cpl[ c ].first ,
-                                         v_cpl[ c ].second ) ] ? 0.5 : 0.0 );
+                                         v_cpl[ c ].second ) ] ?
+                    f_scale / 2 : 0.0 );
+  for( auto & y : v_y )
+   tr.emplace_back( & y , 0.0 , 0.0 );
   f_obj.set_function( new DQuadFunction( std::move( tr ) ) , eNoMod );
   }
  else
@@ -468,6 +479,8 @@ void HQPDistBlock::reset_levels( bool relax_lower , ModParam issueMod )
    set_coupling_in_objective( q , first || relax_lower , issueMod );
    }
   relax_links( issueMod );
+  if( ( AR & HasVar ) && ( AR & HasCns ) )
+   center_root();
   }
  }
 
@@ -495,11 +508,6 @@ void HQPDistBlock::next_level( double tol , ModParam issueMod )
  v_delta.resize( f_level + 1 , 0 );
  v_delta[ f_level ] = delta;
 
- // and so do the y of kBenders, whose link rows a Solver may leave only
- // close to the x
- for( Index k = 0 ; k < v_y.size() ; ++k )
-  v_y[ k ].set_value( x[ v_ycol[ k ] ] );
-
  // the rows of the fixed levels are satisfied at the values of the owners
  for( Index r = 0 ; r < f_R ; ++r )
   if( v_cols[ r ].size() > v_nown[ r ] ) {
@@ -519,10 +527,44 @@ void HQPDistBlock::next_level( double tol , ModParam issueMod )
   set_coupling_in_objective( f_level + 1 , true , issueMod );
   }
  ++f_level;
- if( f_struct == kBenders )
+ if( f_struct == kBenders ) {
   relax_links( issueMod );
+  center_root();
+  }
 
  }  // end( HQPDistBlock::next_level )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPDistBlock::center_root( void )
+{
+ // the y at the x of the owners, whose link rows a Solver may leave only
+ // close to them
+ Vec_double x;
+ get_x_values( x );
+ for( Index k = 0 ; k < v_y.size() ; ++k )
+  v_y[ k ].set_value( x[ v_ycol[ k ] ] );
+
+ // each t at its part at the x of the owner, i.e., its link row at 0
+ for( Index k = 0 ; k < v_piece.size() ; ++k ) {
+  auto lf = static_cast< LinearFunction * >( v_link[ k ]->get_function() );
+  lf->compute( true );
+  v_t[ k ].set_value( v_t[ k ].get_value() + lf->get_value() );
+  }
+
+ // each free slack at the residual of its coupling row at the y and the t
+ for( Index c = 0 ; c < v_cpl.size() ; ++c ) {
+  auto & var = v_s[ c ];
+  if( var.is_fixed() )
+   continue;
+  const auto & row = v_cplr[ c ];
+  auto lf = static_cast< LinearFunction * >( row.get_function() );
+  lf->compute( true );
+  const double r = var.get_value() + lf->get_value() - row.get_rhs();
+  var.set_value( v_cpl[ c ].first ? r : std::max( r , 0.0 ) );
+  }
+
+ }  // end( HQPDistBlock::center_root )
 
 /*--------------------------------------------------------------------------*/
 
@@ -1243,6 +1285,26 @@ void HQPDistBlock::set_coupling_state( Index p , HQPBlock::level_state st ,
 
 /*--------------------------------------------------------------------------*/
 
+void HQPDistBlock::set_objective_scale( double s , ModParam issueMod )
+{
+ for( Index r = 0 ; r < f_R ; ++r )
+  get_robot( r )->set_objective_scale( s , issueMod );
+ if( s == f_scale )
+  return;
+
+ f_scale = s;
+ if( ( f_struct != kBenders ) || ! ( AR & HasObj ) )
+  return;
+
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ for( Index c = 0 ; c < v_cpl.size() ; ++c )
+  if( v_cpl_obj[ level_of( v_cpl[ c ].first , v_cpl[ c ].second ) ] )
+   f->modify_term( v_t.size() + c , 0.0 , f_scale / 2 , issueMod );
+
+ }  // end( HQPDistBlock::set_objective_scale )
+
+/*--------------------------------------------------------------------------*/
+
 void HQPDistBlock::set_coupling_in_objective( Index p , bool in ,
                                               ModParam issueMod )
 {
@@ -1256,7 +1318,8 @@ void HQPDistBlock::set_coupling_in_objective( Index p , bool in ,
  auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
  for( Index c = 0 ; c < v_cpl.size() ; ++c )
   if( level_of( v_cpl[ c ].first , v_cpl[ c ].second ) == p )
-   f->modify_term( c , 0.0 , in ? 0.5 : 0.0 , issueMod );
+   f->modify_term( v_t.size() + c , 0.0 , in ? f_scale / 2 : 0.0 ,
+                   issueMod );
 
  }  // end( HQPDistBlock::set_coupling_in_objective )
 

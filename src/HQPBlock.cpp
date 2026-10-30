@@ -441,14 +441,14 @@ void HQPBlock::generate_objective( Configuration * objc )
  t.reserve( f_n + v_v.size() + v_w.size() );
  for( Index j = 0 ; j < f_n ; ++j )
   t.emplace_back( & v_x[ j ] , v_center.empty() ? 0.0 :
-                  - f_eps * reg_weight( j ) * v_center[ j ] ,
-                  f_eps * reg_weight( j ) / 2 );
+                  - f_scale * f_eps * reg_weight( j ) * v_center[ j ] ,
+                  f_scale * f_eps * reg_weight( j ) / 2 );
  for( Index p = 0 ; p < get_num_levels() ; ++p )
   for( Index i = v_eq_start[ p ] ; i < v_eq_start[ p + 1 ] ; ++i )
-   t.emplace_back( & v_v[ i ] , 0.0 , v_lvl_obj[ p ] ? 0.5 : 0.0 );
+   t.emplace_back( & v_v[ i ] , 0.0 , v_lvl_obj[ p ] ? f_scale / 2 : 0.0 );
  for( Index p = 0 ; p < get_num_levels() ; ++p )
   for( Index i = v_in_start[ p ] ; i < v_in_start[ p + 1 ] ; ++i )
-   t.emplace_back( & v_w[ i ] , 0.0 , v_lvl_obj[ p ] ? 0.5 : 0.0 );
+   t.emplace_back( & v_w[ i ] , 0.0 , v_lvl_obj[ p ] ? f_scale / 2 : 0.0 );
 
  f_obj.set_function( new DQuadFunction( std::move( t ) , reg_constant() ) ,
                      eNoMod );
@@ -703,9 +703,9 @@ void HQPBlock::set_regularization( double eps , ModParam issueMod )
 
  DQuadFunction::v_coeff quad( f_n ) , lin( f_n , 0 );
  for( Index j = 0 ; j < f_n ; ++j ) {
-  quad[ j ] = f_eps * reg_weight( j ) / 2;
+  quad[ j ] = f_scale * f_eps * reg_weight( j ) / 2;
   if( ! v_center.empty() )
-   lin[ j ] = - f_eps * reg_weight( j ) * v_center[ j ];
+   lin[ j ] = - f_scale * f_eps * reg_weight( j ) * v_center[ j ];
   }
  static_cast< DQuadFunction * >( f_obj.get_function() )->modify_terms(
        quad.cbegin() , lin.cbegin() , DQuadFunction::Range( 0 , f_n ) ,
@@ -730,7 +730,7 @@ void HQPBlock::set_center( const Vec_double & c , ModParam issueMod )
  DQuadFunction::v_coeff lin( f_n , 0 );
  if( ! v_center.empty() )
   for( Index j = 0 ; j < f_n ; ++j )
-   lin[ j ] = - f_eps * reg_weight( j ) * v_center[ j ];
+   lin[ j ] = - f_scale * f_eps * reg_weight( j ) * v_center[ j ];
  auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
  f->modify_linear_coefficients( std::move( lin ) ,
                                 DQuadFunction::Range( 0 , f_n ) , issueMod );
@@ -746,8 +746,45 @@ double HQPBlock::reg_constant( void ) const
  double c2 = 0;
  for( Index j = 0 ; j < v_center.size() ; ++j )
   c2 += reg_weight( j ) * v_center[ j ] * v_center[ j ];
- return( f_eps * c2 / 2 );
+ return( f_scale * f_eps * c2 / 2 );
  }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_objective_scale( double s , ModParam issueMod )
+{
+ if( ! ( s > 0 ) || ( s == Inf< double >() ) )
+  throw( std::invalid_argument( "HQPBlock::set_objective_scale: the scale "
+                                "is not finite and positive" ) );
+ if( s == f_scale )
+  return;
+
+ f_scale = s;
+ if( ! ( AR & HasObj ) )
+  return;
+
+ // all the terms at once: x, then the slacks of each kind by level
+ const Index ne = v_b.size() , ni = v_d.size();
+ DQuadFunction::v_coeff quad( f_n + ne + ni , 0 ) , lin( f_n + ne + ni , 0 );
+ for( Index j = 0 ; j < f_n ; ++j ) {
+  quad[ j ] = f_scale * f_eps * reg_weight( j ) / 2;
+  if( ! v_center.empty() )
+   lin[ j ] = - f_scale * f_eps * reg_weight( j ) * v_center[ j ];
+  }
+ for( Index p = 0 ; p < get_num_levels() ; ++p ) {
+  const double q = v_lvl_obj[ p ] ? f_scale / 2 : 0.0;
+  for( Index i = v_eq_start[ p ] ; i < v_eq_start[ p + 1 ] ; ++i )
+   quad[ f_n + i ] = q;
+  for( Index i = v_in_start[ p ] ; i < v_in_start[ p + 1 ] ; ++i )
+   quad[ f_n + ne + i ] = q;
+  }
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ f->modify_terms( quad.cbegin() , lin.cbegin() ,
+                  DQuadFunction::Range( 0 , f_n + ne + ni ) , issueMod );
+ if( f->get_constant_term() != reg_constant() )
+  f->set_constant_term( reg_constant() , issueMod );
+
+ }  // end( HQPBlock::set_objective_scale )
 
 /*--------------------------------------------------------------------------*/
 /*---------------------------- Methods for printing ------------------------*/
@@ -948,7 +985,7 @@ void HQPBlock::set_level_in_objective( Index p , bool in , ModParam issueMod )
   return;
 
  auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
- const double q = in ? 0.5 : 0.0;
+ const double q = in ? f_scale / 2 : 0.0;
  const Index ne = v_b.size();
  for( int k = 0 ; k < 2 ; ++k ) {
   const Index start = f_n + ( k ? ne + v_in_start[ p ] : v_eq_start[ p ] );

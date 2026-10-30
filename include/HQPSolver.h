@@ -137,6 +137,7 @@ class HQPSolver : public Solver
  enum int_par_type_HQPS {
   intProxCenter = intLastAlgPar ,  ///< center at the previous solution
   intRelaxLower ,                  ///< relax the rows of the lower levels
+  intLevelScale ,                  ///< each level solved at value about 1
   intLastHQPSPar  ///< first allowed int parameter for derived classes
   };
 
@@ -156,7 +157,8 @@ class HQPSolver : public Solver
  /// constructor: the HQPSolver has no Block and no inner Solver
 
  HQPSolver( void ) : Solver() , f_bsc( nullptr ) , f_prox( 0 ) ,
-  f_relax( 1 ) , f_verb( 0 ) , f_tol( 0 ) , f_status( kUnEval ) ,
+  f_relax( 1 ) , f_scale( 0 ) , f_verb( 0 ) , f_tol( 0 ) ,
+  f_status( kUnEval ) ,
   f_iter( 0 ) {}
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
@@ -182,7 +184,20 @@ class HQPSolver : public Solver
   * - intRelaxLower [1]: if 0, the rows of the levels below the
   *   current one are enforced, their slacks free and out of the Objective;
   *   if 1, they are relaxed and their slacks fixed to 0 [see
-  *   HQPBlock::reset_levels()]. */
+  *   HQPBlock::reset_levels()];
+  *
+  * - intLevelScale [0]: if 1, the Objective of level p is multiplied by
+  *   \f$ 1 / f_p \f$ [see HQPLevelBlock::set_objective_scale()], \f$ f_p
+  *   \f$ being the value of its Objective (the slacks and the
+  *   regularization) in the previous compute() or, the first time, the one
+  *   found solving it unscaled, after which the level is solved again if
+  *   \f$ f_p < 0.1 \f$; a level whose Objective is below 1e-10 is not
+  *   scaled. Nothing changes but the scale of the value that the
+  *   inner Solver sees, which is about 1, whence its tolerances, often
+  *   absolute ones in practice (a value relative to max( 1 , | f | ), a
+  *   feasibility tolerance), are relative to the level: e.g., a
+  *   decomposition whose levels have values of 1e-6 otherwise stops at a
+  *   gap of the order of the value itself. */
 
  void set_par( idx_type par , int value ) override;
 
@@ -370,6 +385,8 @@ class HQPSolver : public Solver
    return( 0 );
   if( par == intRelaxLower )
    return( 1 );
+  if( par == intLevelScale )
+   return( 0 );
   return( Solver::get_dflt_int_par( par ) );
   }
 
@@ -400,6 +417,8 @@ class HQPSolver : public Solver
    return( f_prox );
   if( par == intRelaxLower )
    return( f_relax );
+  if( par == intLevelScale )
+   return( f_scale );
   if( par == intLogVerb )
    return( f_verb );
   return( Solver::get_int_par( par ) );
@@ -432,6 +451,8 @@ class HQPSolver : public Solver
    return( intProxCenter );
   if( name == "intRelaxLower" )
    return( intRelaxLower );
+  if( name == "intLevelScale" )
+   return( intLevelScale );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -460,7 +481,8 @@ class HQPSolver : public Solver
  [[nodiscard]] const std::string & int_par_idx2str( idx_type idx )
   const override {
   static const std::string pars[] = { "intProxCenter" ,
-                                      "intRelaxLower" };
+                                      "intRelaxLower" ,
+                                      "intLevelScale" };
   if( ( idx >= intProxCenter ) && ( idx < intLastHQPSPar ) )
    return( pars[ idx - intProxCenter ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -523,6 +545,7 @@ class HQPSolver : public Solver
 
  int f_prox;                  ///< intProxCenter
  int f_relax;                 ///< intRelaxLower
+ int f_scale;                 ///< intLevelScale
  int f_verb;                  ///< intLogVerb
  double f_tol;                ///< dblSlackTol
 
@@ -533,6 +556,8 @@ class HQPSolver : public Solver
  std::vector< Vec_double > v_vl;  ///< v of each level solved
  std::vector< Vec_double > v_wl;  ///< w of each level solved
  Vec_double v_val;            ///< value of each level solved
+ Vec_double v_obj;            ///< its Objective, with intLevelScale
+ Vec_double v_prev;           ///< that of the previous compute()
 
 /*--------------------- PRIVATE PART OF THE CLASS --------------------------*/
 

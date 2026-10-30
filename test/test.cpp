@@ -287,12 +287,14 @@ static const DQuadFunction * objective( HQPBlock & block )
  }
 
 /*--------------------------------------------------------------------------*/
-// the Objective is that of the current state of the levels: ( - eps c ,
-// eps / 2 ) on x, ( 0 , 1 / 2 ) on the slacks of the levels in it, given by
-// in[ p ], ( 0 , 0 ) on the others, and the constant eps || c ||^2 / 2
+// the Objective is that of the current state of the levels, times sc: (
+// - eps c , eps / 2 ) on x, ( 0 , 1 / 2 ) on the slacks of the levels in
+// it, given by in[ p ], ( 0 , 0 ) on the others, and the constant eps || c
+// ||^2 / 2
 
 static bool objective_agrees( HQPBlock & block ,
-                              const std::vector< bool > & in )
+                              const std::vector< bool > & in ,
+                              double sc = 1 )
 {
  const auto f = objective( block );
  const Index n = block.get_num_var() , ne = block.get_eq().size();
@@ -303,16 +305,16 @@ static bool objective_agrees( HQPBlock & block ,
  double c2 = 0;
  for( auto cj : c )
   c2 += cj * cj;
- if( std::abs( f->get_constant_term() - eps * c2 / 2 ) > 1e-15 )
+ if( std::abs( f->get_constant_term() - sc * eps * c2 / 2 ) > 1e-15 )
   return( false );
  for( Index j = 0 ; j < n ; ++j )
   if( ( f->get_active_var( j ) != & block.get_x()[ j ] ) ||
       ( f->get_linear_coefficient( j ) !=
-        ( c.empty() ? 0.0 : - eps * c[ j ] ) ) ||
-      ( f->get_quadratic_coefficient( j ) != eps / 2 ) )
+        ( c.empty() ? 0.0 : - sc * eps * c[ j ] ) ) ||
+      ( f->get_quadratic_coefficient( j ) != sc * eps / 2 ) )
    return( false );
  for( Index p = 0 ; p < block.get_num_levels() ; ++p ) {
-  const double q = in[ p ] ? 0.5 : 0.0;
+  const double q = in[ p ] ? sc / 2 : 0.0;
   for( Index i = block.get_eq_start( p ) ; i < block.get_eq_start( p + 1 ) ;
        ++i )
    if( ( f->get_active_var( n + i ) != & block.get_v()[ i ] ) ||
@@ -1083,6 +1085,38 @@ static void test_refix( void )
 // - level 3: empty, so that the coupling row of level 1 is fixed again.
 // Owner 0 copies x_2 and x_3, owner 1 copies x_0; x_2 has mu = 1, x_0 too.
 
+// the scale of the whole Objective, which leaves the values of the levels
+// as they are
+
+static void test_scale( void )
+{
+ std::cout << "scale of the Objective" << std::endl;
+ const int e0 = errors;
+ HQPBlock block;
+ load( block , small_data() );
+ // before the Objective is there, then on it
+ block.set_objective_scale( 2 );
+ generate( block );
+ CHECK( objective_agrees( block , { true , false , false , false } , 2 ) );
+ block.set_objective_scale( 1 );
+ CHECK( objective_agrees( block , { true , false , false , false } ) );
+ block.set_objective_scale( 2 );
+ Vec c( block.get_num_var() , 0.5 );
+ block.set_center( c );
+ CHECK( objective_agrees( block , { true , false , false , false } , 2 ) );
+ Vec v , w , v1 , w1;
+ const double val = block.level_slacks( 0 , v , w );
+ block.set_objective_scale( 1 );
+ CHECK( block.level_slacks( 0 , v1 , w1 ) == val );
+ CHECK( objective_agrees( block , { true , false , false , false } ) );
+ for( double bad : { 0.0 , -1.0 , Inf< double >() } )
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+          block.set_objective_scale( bad ); } ) );
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+
 static Data dist_data( void )
 {
  Data D;
@@ -1418,8 +1452,40 @@ static void test_dist_benders( void )
  CHECK( sl[ 2 ].is_fixed() &&
         ( std::abs( sl[ 2 ].get_value() - 9.6 ) < 1e-12 ) );
  CHECK( ! l0.back().is_relaxed() );
- // the y have the values of the owners
+ // the y have the values of the owners, the t those of their parts, i.e.,
+ // their link rows hold at 0, and the free s_0 is the residual of its row,
+ // 0.5 + 4 - 2
  CHECK( ( y[ 0 ].get_value() == 0.5 ) && ( y[ 1 ].get_value() == 4 ) );
+ for( const auto & l : { & l0 , & l1 } )
+  for( auto & row : *l ) {
+   auto lf = static_cast< LinearFunction * >( row.get_function() );
+   lf->compute( true );
+   CHECK( std::abs( lf->get_value() ) < 1e-12 );
+   }
+ CHECK( ( ! sl[ 0 ].is_fixed() ) &&
+        ( std::abs( sl[ 0 ].get_value() - 2.5 ) < 1e-12 ) );
+ // the Objective of the root has all its Variable, t, s and y in this
+ // order, the t and the y at 0 and the s of level 2 at 1 / 2; scaled by 2,
+ // so are those of the root and of the owners
+ const auto ro = static_cast< const DQuadFunction * >(
+            static_cast< FRealObjective * >( db.get_objective() )->
+            get_function() );
+ CHECK( ( ro->get_num_active_var() == 9 ) &&
+        ( ro->get_active_var( 0 ) == & t[ 0 ] ) &&
+        ( ro->get_active_var( 4 ) == & sl[ 0 ] ) &&
+        ( ro->get_active_var( 7 ) == & y[ 0 ] ) &&
+        ( ro->get_quadratic_coefficient( 4 ) == 0.5 ) &&
+        ( ro->get_quadratic_coefficient( 0 ) == 0 ) &&
+        ( ro->get_quadratic_coefficient( 7 ) == 0 ) );
+ const double q0 = objective( * db.get_robot( 0 ) )->
+                                               get_quadratic_coefficient( 0 );
+ db.set_objective_scale( 2 );
+ CHECK( ( ro->get_quadratic_coefficient( 4 ) == 1 ) &&
+        ( ro->get_quadratic_coefficient( 0 ) == 0 ) &&
+        ( objective( * db.get_robot( 0 ) )->get_quadratic_coefficient( 0 ) ==
+          2 * q0 ) );
+ db.set_objective_scale( 1 );
+ CHECK( ro->get_quadratic_coefficient( 4 ) == 0.5 );
  for( Index p = 0 ; p < 4 ; ++p ) {
   Vec v , w , vc , wc;
   generate( central );
@@ -1497,6 +1563,7 @@ int main( int argc , char ** argv )
  test_print();
  test_reg_weights();
  test_refix();
+ test_scale();
  test_dist();
  test_dist_benders();
 

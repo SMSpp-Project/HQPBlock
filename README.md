@@ -42,9 +42,14 @@ approach with a regularized step. With `intRelaxLower` (the default)
 the rows of the levels below the current one are relaxed and their slacks
 fixed to 0; this keeps the Hessian positive definite if `eps > 0`, while the
 rows left in the model with free slacks make it singular, which the inner
-Solvers handle rather less accurately. All that `HQPSolver` uses of the
-Block is in the interface `HQPLevelBlock`, which `HQPBlock` implements and
-so does `HQPDistBlock`.
+Solvers handle rather less accurately. With `intLevelScale` the `Objective`
+of each level is multiplied by the inverse of its value (that of the same
+level in the previous step, or of a first solve), which changes no
+minimizer and lets an inner Solver whose tolerances are absolute in
+practice (e.g., a decomposition, on levels of values of 1e-6) see a level
+of value about 1. All that `HQPSolver` uses of the Block is in the
+interface `HQPLevelBlock`, which `HQPBlock` implements and so does
+`HQPDistBlock`.
 
 `HQPDistBlock` is the same hierarchy with its variables split among owners,
 e.g., the robots of a multi-robot Model Predictive Control, so that it can
@@ -63,10 +68,15 @@ again the slacks of the levels already fixed at these values, so that every
 level is feasible whatever the accuracy of a decomposition. With `kBenders`,
 the one of a Benders decomposition, each owner has only its own variables
 and the rows all of whose entries are in them, while each coupling row is
-in the root, with its slack and a variable `t` for each owner with entries
-in it, which bounds the part of the row in the variables of that owner by
-a row of the dynamic group `link` of its sub-Block; again, the problem of
-each level is exactly that of the centralized hierarchy.
+in the root, with its slack. Each variable of an equality coupling row has
+a copy `y` in the root, equal to it by a row of the dynamic group `link` of
+the sub-Block of its owner, and the `y` enter all the coupling rows; the
+other variables of an inequality coupling row enter it through a variable
+`t` for each owner, which bounds the part of the row in the variables of
+that owner by a row of `link`. Again, the problem of each level is exactly
+that of the centralized hierarchy, and moving to the next level puts the
+`y`, the `t` and the free slacks of the root at the solution of the
+previous one, where every row holds.
 
 An `HQPBlock` is serialized into and deserialized out of netCDF, with the
 rows in compressed sparse row form (cf. `HQPBlock::deserialize()`). The
