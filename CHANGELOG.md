@@ -47,3 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - the unit test of `HQPBlock` and `HQPDistBlock`, which needs the core
   library only: the methods of the Blocks and the Modification they issue,
   the netCDF format and its degenerate cases, checked without solving
+### Fixed
+
+- with the compilers of MinGW (MSYS2) the target asks whoever links it
+  for the symbol that forces the module in, as with MSVC and on macOS:
+  the linker imports a DLL only for the symbols asked for, so that a
+  program that used none had the module left out and its classes
+  missing from the factory
+
