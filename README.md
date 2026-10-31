@@ -78,11 +78,33 @@ that of the centralized hierarchy, and moving to the next level puts the
 `y`, the `t` and the free slacks of the root at the solution of the
 previous one, where every row holds.
 
+An `HQPBlock` can also carry the stage structure of an optimal control
+problem over `N` stages (cf. `HQPBlock::StageData`): the stage `k` of each
+column and whether it is a component of the input `u_k` or of the state
+`s_k`, optionally the stage of each row, and the level whose equality rows
+are the dynamics `s_{k+1} = A_k s_k + B_k u_k + c_k`. `HQPStageSolver`
+solves one level of such an `HQPBlock`, e.g., as the inner Solver of each
+level of an `HQPSolver`: each row is written on its stage through the
+dynamics (with the previous input in the state, a row may also have entries
+on `s_k` and `u_{k-1}`), and the level is an optimal control problem with
+stage rows, which a primal active-set method solves starting from the
+current point (in a cascade, the solution of the previous level), each
+subproblem by a Riccati recursion with stage equalities and
+constraints-to-go, whose rank-revealing reductions allow dependent rows,
+in a time linear in `N`. It keeps its working set from a solve to the next
+one, e.g., the same level in the next step of a Model Predictive Control,
+and computes the dynamics again only when the coefficients of some row
+change. It needs only Eigen.
+
 An `HQPBlock` is serialized into and deserialized out of netCDF, with the
-rows in compressed sparse row form (cf. `HQPBlock::deserialize()`). The
+rows in compressed sparse row form and the stage structure, if any, in the
+dimension `NumStages` and the variables `VarStage`, `VarState`, `EqStage`,
+`IneqStage` and `DynamicsLevel` (cf. `HQPBlock::deserialize()`). The
 script `tools/npz2nc4.py` converts a hierarchy given as a `.npz` file (keys
 `A_<p>`, `b_<p>`, `C_<p>`, `d_<p>` and, optionally, `we_<p>`, `wi_<p>`) into
-that format. An
+that format, with the stage structure if the file has it (keys `n_stages`,
+`var_stage`, `var_state` and, optionally, `eq_stage`, `ineq_stage`,
+`dynamics_level`). An
 `HQPDistBlock` is the owners of the columns (and, optionally, of the rows)
 together with the centralized `HQPBlock` in a group of its own (cf.
 `HQPDistBlock::deserialize()`). The instances of `data/nc4` are some steps
@@ -94,17 +116,24 @@ in Heterogeneous Multi-Robot Systems Through Hierarchical Optimization",
 IEEE Robotics and Automation Letters 10(6):5305-5312, 2025), with the
 solution of each level of that implementation, written by
 `tools/ho_mpc_radial.py` with the package and converted by
-`tools/npz2nc4.py`.
+`tools/npz2nc4.py`: those of the control horizon 3 without the stage
+structure, those of the control horizons 10, 20 and 50 (one of them with
+the avoidance of the collisions at every stage) with it.
 
-The unit test `test/test.cpp` needs the core library only and solves
-nothing: it checks the methods of the Block (the sizes of the levels, the
+The unit test `test/test.cpp` needs the core library only. It checks the
+methods of the Block (the sizes of the levels, the
 abstract representation, the move from a level to the next one, the changes
 of the data and the Modification they issue), the netCDF format and the
 errors of the reader, on hierarchies with the degenerate parts of the format
 (levels with no equalities or no inequalities, empty levels, rows with no
 entries, weights different from 1), and those of `HQPDistBlock` (the owners
 of the rows, the copies and the consensus rows, the slacks fixed again,
-the changes of the data in and out of the pattern of a row). `HQPSolver`,
+the changes of the data in and out of the pattern of a row), the stage
+structure, the Riccati recursion of `HQPStageSolver` against the dense KKT
+system on random problems with dependent rows, and `HQPStageSolver` on
+hierarchies whose values are known and, given instance files, on the
+instances of `data/nc4` with the stage structure against their
+solution. `HQPSolver`,
 whose inner Solver comes
 from another module, is tested by the suite
 [`HQPBlock`](https://gitlab.com/smspp/tests/-/tree/develop/HQPBlock) of the

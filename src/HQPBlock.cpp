@@ -156,6 +156,54 @@ void write_rows( netCDF::NcGroup & group , const std::string & pfx ,
                                                                wgh.data() );
  }
 
+/*--------------------------------------------------------------------------*/
+// checks the stage structure of a hierarchy of n variables, P levels, me
+// equality and mi inequality rows, as described in HQPBlock::StageData
+
+void check_stages( const HQPBlock::StageData & st , std::size_t n ,
+                   std::size_t P , std::size_t me , std::size_t mi )
+{
+ auto fail = []( const std::string & what ) {
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: " + what ) );
+  };
+
+ const auto N = st.num_stages;
+ if( ! N ) {
+  if( ! ( st.var_stage.empty() && st.var_state.empty() &&
+          st.eq_stage.empty() && st.ineq_stage.empty() &&
+          ( st.dynamics_level == 0 ) ) )
+   fail( "stage data with no stages" );
+  return;
+  }
+
+ if( ( st.var_stage.size() != n ) || ( st.var_state.size() != n ) )
+  fail( "VarStage or VarState has not n entries" );
+ for( std::size_t j = 0 ; j < n ; ++j ) {
+  if( st.var_state[ j ] > 1 )
+   fail( "VarState of column " + std::to_string( j ) + " is not 0 or 1" );
+  if( st.var_stage[ j ] + ( st.var_state[ j ] ? 0 : 1 ) > N )
+   fail( "column " + std::to_string( j ) + " out of the stages" );
+  }
+
+ for( int k = 0 ; k < 2 ; ++k ) {
+  const auto & rs = k ? st.ineq_stage : st.eq_stage;
+  if( rs.empty() )
+   continue;
+  if( rs.size() != ( k ? mi : me ) )
+   fail( std::string( k ? "IneqStage" : "EqStage" ) + " has not one entry "
+         "for each row" );
+  if( std::any_of( rs.begin() , rs.end() ,
+                   [ N ]( auto r ) { return( r >= N ); } ) )
+   fail( std::string( k ? "IneqStage" : "EqStage" ) + " out of the "
+         "stages" );
+  }
+
+ if( st.dynamics_level >= P )
+  fail( "DynamicsLevel is not a level" );
+ }
+
+/*--------------------------------------------------------------------------*/
+
 }  // end( unnamed namespace )
 
 /*--------------------------------------------------------------------------*/
@@ -168,11 +216,11 @@ void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
                      std::vector< Vec_double > && d ,
                      std::vector< Vec_double > && we ,
                      std::vector< Vec_double > && wi , double eps ,
-                     Vec_double && rw )
+                     Vec_double && rw , StageData && stages )
 {
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
                std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
-               std::move( rw ) );
+               std::move( rw ) , std::move( stages ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -191,7 +239,7 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
                              std::vector< Vec_double > && d ,
                              std::vector< Vec_double > && we ,
                              std::vector< Vec_double > && wi , double eps ,
-                             Vec_double && rw )
+                             Vec_double && rw , StageData && stages )
 {
  const Index P = A.size();
  if( ( ! n ) || ( ! P ) )
@@ -233,9 +281,17 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
                                  "wi of level " + std::to_string( p ) ) );
   }
 
+ Index me = 0 , mi = 0;
+ for( Index p = 0 ; p < P ; ++p ) {
+  me += b[ p ].size();
+  mi += d[ p ].size();
+  }
+ check_stages( stages , n , P , me , mi );
+
  guts_of_destructor();
 
  f_n = n;
+ f_stages = std::move( stages );
  f_eps = eps;
  v_rw = std::move( rw );
  v_center.clear();
@@ -292,10 +348,34 @@ void HQPBlock::deserialize( const netCDF::NcGroup & group )
  Vec_double rw;
  ::deserialize( group , "RegularizationWeight" , n , rw , true );
 
+ StageData st;
+ std::size_t N = 0;
+ ::deserialize_dim( group , "NumStages" , N );
+ if( N ) {
+  std::size_t me = 0 , mi = 0;
+  ::deserialize_dim( group , "NumEqRows" , me );
+  ::deserialize_dim( group , "NumIneqRows" , mi );
+  std::vector< unsigned int > vs , vt , es , is;
+  ::deserialize( group , "VarStage" , n , vs , false );
+  ::deserialize( group , "VarState" , n , vt , false );
+  if( me )
+   ::deserialize( group , "EqStage" , me , es , true );
+  if( mi )
+   ::deserialize( group , "IneqStage" , mi , is , true );
+  unsigned int dl = 0;
+  ::deserialize( group , dl , "DynamicsLevel" , true );
+  st.num_stages = N;
+  st.var_stage.assign( vs.begin() , vs.end() );
+  st.var_state.assign( vt.begin() , vt.end() );
+  st.eq_stage.assign( es.begin() , es.end() );
+  st.ineq_stage.assign( is.begin() , is.end() );
+  st.dynamics_level = dl;
+  }
+
  // the NBModification is issued by Block::deserialize()
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
                std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
-               std::move( rw ) );
+               std::move( rw ) , std::move( st ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -327,6 +407,24 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
                   []( double r ) { return( r != 1 ); } ) )
   group.addVar( "RegularizationWeight" , netCDF::NcDouble() , dn ).putVar(
                                                                v_rw.data() );
+
+ if( ! f_stages.num_stages )
+  return;
+
+ group.addDim( "NumStages" , f_stages.num_stages );
+ auto put = [ & ]( const std::string & name , const netCDF::NcDim & dim ,
+                   const std::vector< Index > & data ) {
+  std::vector< unsigned int > u( data.begin() , data.end() );
+  group.addVar( name , netCDF::NcUint() , dim ).putVar( u.data() );
+  };
+ put( "VarStage" , dn , f_stages.var_stage );
+ put( "VarState" , dn , f_stages.var_state );
+ if( ! f_stages.eq_stage.empty() )
+  put( "EqStage" , group.getDim( "NumEqRows" ) , f_stages.eq_stage );
+ if( ! f_stages.ineq_stage.empty() )
+  put( "IneqStage" , group.getDim( "NumIneqRows" ) , f_stages.ineq_stage );
+ const unsigned int dyn = f_stages.dynamics_level;
+ group.addVar( "DynamicsLevel" , netCDF::NcUint() ).putVar( & dyn );
 
  }  // end( HQPBlock::serialize )
 
@@ -794,6 +892,17 @@ void HQPBlock::print( std::ostream & output , char vlvl ) const
 {
  output << "HQPBlock with " << f_n << " variables and " << get_num_levels()
         << " levels, regularization " << f_eps << std::endl;
+ if( f_stages.num_stages ) {
+  output << " " << f_stages.num_stages << " stages, the dynamics at level "
+         << f_stages.dynamics_level << std::endl;
+  if( vlvl > 0 ) {
+   output << "  stage of each column (s state, u input):";
+   for( Index j = 0 ; j < f_n ; ++j )
+    output << " " << ( f_stages.var_state[ j ] ? "s" : "u" )
+           << f_stages.var_stage[ j ];
+   output << std::endl;
+   }
+  }
  for( Index p = 0 ; p < get_num_levels() ; ++p ) {
   output << " level " << p << ": " << get_num_eq_rows( p )
          << " equality rows, " << get_num_ineq_rows( p )

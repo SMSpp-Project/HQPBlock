@@ -47,6 +47,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - the unit test of `HQPBlock` and `HQPDistBlock`, which needs the core
   library only: the methods of the Blocks and the Modification they issue,
   the netCDF format and its degenerate cases, checked without solving
+- the stage structure of an optimal control problem in `HQPBlock`
+  (`HQPBlock::StageData`, an optional argument of `load()`): the number of
+  stages, the stage of each column and whether it is a state or an input,
+  optionally the stage of each row, and the level of the dynamics, with
+  their getters, in `print()` and in the netCDF format (`NumStages`,
+  `VarStage`, `VarState`, `EqStage`, `IneqStage`, `DynamicsLevel`); a file
+  without them is read as before; `get_objective_scale()`
+- `HQPStageSolver`, a Solver of one level of an `HQPBlock` with the stage
+  structure, e.g., the inner Solver of `HQPSolver`: a primal active-set
+  method started at the current point of the `HQPBlock` (the solution of
+  the previous level), whose subproblems are solved by a Riccati recursion
+  with stage equalities and constraints-to-go, rank-revealing so that
+  dependent rows are allowed, with the multipliers of the rows from a
+  forward sweep; it keeps its working set from a `compute()` to the next
+  one (`intWarmStart`), computes the dynamics and the rows on the stages
+  anew only when the coefficients of some row change, and has the
+  tolerances `dblRankTol`, `dblFeasTol` and `dblDualTol`
+- `tools/ho_mpc_radial.py` takes the control horizon and the avoidance of
+  the collisions at every stage, and writes the stage structure, which
+  `tools/npz2nc4.py` converts; `data/nc4` (version 2026-10-31) has also
+  steps of the control horizons 10, 20 and 50 with the stage structure
+- the unit test checks the stage structure of `HQPBlock`, the recursion of
+  `HQPStageSolver` against the dense KKT system on random problems with
+  dependent rows, constraints-to-go, a free or empty initial state and
+  stages with no input, the cascade of `HQPStageSolver` on hierarchies
+  whose values are known, with dependent rows and on steps of Model
+  Predictive Control, what it refuses, and, as the test
+  `HQPBlock_unit_test_radial`, the instances of `data/nc4` with the stage
+  structure against their solution
+
 ### Changed
 
 - the README points to the installation guide of the wiki
@@ -63,4 +93,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the linker imports a DLL only for the symbols asked for, so that a
   program that used none had the module left out and its classes
   missing from the factory
+- `HQPSolver::compute()` is left unlocked when an inner Solver throws
 

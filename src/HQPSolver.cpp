@@ -144,6 +144,12 @@ int HQPSolver::compute( bool changedvars )
 {
  lock();
 
+ // the lock is released also when an inner Solver throws
+ struct Release {
+  HQPSolver * s;
+  ~Release() { s->unlock(); }
+  } release{ this };
+
  v_stat.clear();
  v_xl.clear();
  v_vl.clear();
@@ -158,7 +164,6 @@ int HQPSolver::compute( bool changedvars )
 
  auto hb = dynamic_cast< HQPLevelBlock * >( f_Block );
  if( ( ! hb ) || v_inner.empty() || ( ! hb->get_num_levels() ) ) {
-  unlock();
   return( f_status = kError );
   }
 
@@ -271,7 +276,6 @@ int HQPSolver::compute( bool changedvars )
   unlock_block();
   }
 
- unlock();
  return( f_status );
 
  }  // end( HQPSolver::compute )

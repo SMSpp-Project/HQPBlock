@@ -261,7 +261,9 @@ class HQPSolver : public Solver
   * Solver if all the levels have been solved but some not with kOK, and
   * otherwise the status of the level where the process stopped (kError if
   * there is no HQPBlock or no inner Solver), the solutions of the levels
-  * before that one being available. */
+  * before that one being available. An exception thrown by an inner
+  * Solver (e.g., one that does not apply to the HQPBlock) is passed on,
+  * the HQPSolver being left unlocked. */
 
  int compute( bool changedvars = true ) override;
 

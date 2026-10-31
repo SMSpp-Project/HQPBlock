@@ -2,11 +2,12 @@
 /*------------------------------ File test.cpp -----------------------------*/
 /*--------------------------------------------------------------------------*/
 /** @file
- * Unit test of HQPBlock, which needs the core library only: nothing is
- * solved, and what is checked is what the Block itself does, on small
- * hierarchies written here whose degenerate parts are a level of equalities
- * only, one of inequalities only, an empty one, rows with no entries and
- * weights different from 1. The cases are:
+ * Unit test of HQPBlock, which needs the core library only: what is
+ * checked is what the Block itself does, on small hierarchies written here
+ * whose degenerate parts are a level of equalities only, one of
+ * inequalities only, an empty one, rows with no entries and weights
+ * different from 1, and HQPStageSolver, the Solver of the module that
+ * needs nothing else. The cases are:
  *
  * - load() and its errors (no variables, no levels, sizes that do not
  *   agree, a negative regularization), and the sizes and starts of the rows
@@ -64,6 +65,34 @@
  *   one), and the structure refused once the abstract representation is
  *   there.
  *
+ * - the stage structure: load() and its errors, the getters, the netCDF
+ *   format with and without the stages of the rows, a file without it,
+ *   and print();
+ *
+ * - the recursion of HQPStageSolver::StageEQP against the dense KKT system
+ *   of the whole horizon on random problems: rows from 0 to more than the
+ *   inputs at each stage (constraints-to-go), as many rows as inputs, rows
+ *   dependent in a stage and through the dynamics, rows on x_0 and x_N, an
+ *   x_0 of size 0, sizes that change along the stages, one stage, stages
+ *   with no input, the size of the 8 robots of the radial scenario, an
+ *   inconsistent dependent row (reported) and no regularization; the
+ *   trajectory, the objective, the rows and the stationarity with the
+ *   multipliers;
+ *
+ * - HQPStageSolver on the levels of hierarchies whose values are known (an
+ *   integrator with input limits, smoothness and goals, with the stages of
+ *   the rows derived and given; the initial state as a column; dependent
+ *   rows of a task and of the levels above), on two steps of Model
+ *   Predictive Control (set_b(), then set_A() on the dynamics) against a
+ *   new HQPBlock, the warm start taking no more iterations than the cold
+ *   one, what it refuses (no stage structure, a level above the dynamics,
+ *   a row of the dynamics with two states of its stage, a row out of its
+ *   given stage only at its level, a Block that is not an HQPBlock, wrong
+ *   parameters) and the iteration limit;
+ *
+ * - with instance files as arguments, only HQPStageSolver on each of them,
+ *   against the solution of each level that it carries.
+ *
  * The HQPSolver, which needs an inner Solver from another module, is tested
  * by the suite HQPBlock of the system tests of SMS++.
  *
@@ -79,6 +108,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -94,6 +124,8 @@
 #include "HQPBlock.h"
 
 #include "HQPDistBlock.h"
+
+#include "HQPStageSolver.h"
 
 #include "ColVariableSolution.h"
 
@@ -141,6 +173,7 @@ struct Data {
  std::vector< Mat > A , C;
  std::vector< Vec > b , d , we , wi;
  double eps = 0;
+ HQPBlock::StageData st;
  };
 
 static HQPBlock::SparseMatrix sparse( const Mat & M )
@@ -156,8 +189,10 @@ static void load( HQPBlock & block , const Data & D )
  for( const auto & M : D.C )
   C.push_back( sparse( M ) );
  auto b = D.b , d = D.d , we = D.we , wi = D.wi;
+ auto st = D.st;
  block.load( D.n , std::move( A ) , std::move( b ) , std::move( C ) ,
-             std::move( d ) , std::move( we ) , std::move( wi ) , D.eps );
+             std::move( d ) , std::move( we ) , std::move( wi ) , D.eps ,
+             {} , std::move( st ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1552,9 +1587,896 @@ static void test_dist_benders( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/*------------------------- THE STAGE STRUCTURE ----------------------------*/
+/*--------------------------------------------------------------------------*/
+// a single integrator over 2 stages, columns u_0 , u_1 , s_1 , s_2 (s_0 = 0
+// is not a column): level 0 the dynamics s_{k+1} = s_k + u_k, level 1 the
+// limits |u_k| <= 1, level 2 the smoothness |u_1 - u_0| <= 0.5 (a row of
+// stage 1 on u_0), level 3 the goal s_2 = 5, which the limits keep at 2
+// (value 9/2), level 4 s_1 = 0, which the goal keeps at 1 (value 1/2)
+
+static Data integrator_data( void )
+{
+ Data D;
+ D.n = 4;
+ D.eps = 1e-10;
+ Mat A0( 2 , 4 ) , C1( 4 , 4 ) , C2( 2 , 4 ) , A3( 1 , 4 ) , A4( 1 , 4 );
+ A0 << -1 , 0 , 1 , 0 ,
+        0 , -1 , -1 , 1;
+ C1 << 1 , 0 , 0 , 0 ,
+      -1 , 0 , 0 , 0 ,
+       0 , 1 , 0 , 0 ,
+       0 , -1 , 0 , 0;
+ C2 << -1 , 1 , 0 , 0 ,
+        1 , -1 , 0 , 0;
+ A3 << 0 , 0 , 0 , 1;
+ A4 << 0 , 0 , 1 , 0;
+ D.A = { A0 , Mat( 0 , 4 ) , Mat( 0 , 4 ) , A3 , A4 };
+ D.b = { { 0 , 0 } , {} , {} , { 5 } , { 0 } };
+ D.C = { Mat( 0 , 4 ) , C1 , C2 , Mat( 0 , 4 ) , Mat( 0 , 4 ) };
+ D.d = { {} , { 1 , 1 , 1 , 1 } , { 0.5 , 0.5 } , {} , {} };
+ D.st.num_stages = 2;
+ D.st.var_stage = { 0 , 1 , 1 , 2 };
+ D.st.var_state = { 0 , 0 , 1 , 1 };
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+// one stage with the initial state as a column, s_0 , u_0 , s_1: level 0
+// the dynamics s_1 = s_0 + u_0, level 1 s_0 = 3 (a row of stage 0 on x_0
+// only), level 2 |u_0| <= 1, level 3 s_1 = 0, which the others keep at 2
+// (value 2)
+
+static Data initial_state_data( void )
+{
+ Data D;
+ D.n = 3;
+ D.eps = 1e-10;
+ Mat A0( 1 , 3 ) , A1( 1 , 3 ) , C2( 2 , 3 ) , A3( 1 , 3 );
+ A0 << -1 , -1 , 1;
+ A1 << 1 , 0 , 0;
+ C2 << 0 , 1 , 0 ,
+       0 , -1 , 0;
+ A3 << 0 , 0 , 1;
+ D.A = { A0 , A1 , Mat( 0 , 3 ) , A3 };
+ D.b = { { 0 } , { 3 } , {} , { 0 } };
+ D.C = { Mat( 0 , 3 ) , Mat( 0 , 3 ) , C2 , Mat( 0 , 3 ) };
+ D.d = { {} , {} , { 1 , 1 } , {} };
+ D.st.num_stages = 1;
+ D.st.var_stage = { 0 , 0 , 1 };
+ D.st.var_state = { 1 , 0 , 1 };
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the levels of a hierarchy solved one after the other by an HQPStageSolver
+// each, as HQPSolver does with intProxCenter 1 and intRelaxLower 1; the
+// Solvers are registered to the HQPBlock, so that they see its
+// Modification, and kept from a run to the next one
+
+struct Cascade {
+ HQPBlock & block;
+ std::vector< HQPStageSolver * > s;
+ long iter = 0;     // the iterations of the last run()
+ int status = 0;    // the first status not kOK, kOK if none
+
+ explicit Cascade( HQPBlock & b ) : block( b ) {}
+
+ ~Cascade() { block.unregister_Solvers( true ); }
+
+ HQPStageSolver * solver( Index p ) {
+  while( s.size() <= p ) {
+   auto x = dynamic_cast< HQPStageSolver * >(
+                                  Solver::new_Solver( "HQPStageSolver" ) );
+   x->set_Block( & block );
+   block.register_Solver( x );
+   s.push_back( x );
+   }
+  return( s[ p ] );
+  }
+
+ // the value of each level
+ std::vector< double > run( void ) {
+  generate( block );
+  block.reset_levels( true );
+  block.set_center( {} );
+  iter = 0;
+  status = Solver::kOK;
+  std::vector< double > val;
+  for( Index p = 0 ; p < block.get_num_levels() ; ++p ) {
+   auto x = solver( p );
+   const int st = x->compute();
+   iter += x->get_elapsed_iterations();
+   if( ( st != Solver::kOK ) && ( status == Solver::kOK ) )
+    status = st;
+   x->get_var_solution();
+   Vec xv , v , w;
+   block.get_x_values( xv );
+   val.push_back( block.level_slacks( p , v , w ) );
+   if( p + 1 < block.get_num_levels() ) {
+    block.set_center( xv );
+    block.next_level();
+    }
+   }
+  return( val );
+  }
+ };
+
+/*--------------------------------------------------------------------------*/
+// the values of the levels are the expected ones, to tol
+
+static bool values_are( const std::vector< double > & val ,
+                        const std::vector< double > & exp , double tol )
+{
+ if( val.size() != exp.size() )
+  return( false );
+ for( Index p = 0 ; p < val.size() ; ++p )
+  if( std::abs( val[ p ] - exp[ p ] ) > tol * std::max( 1.0 , exp[ p ] ) ) {
+   std::cout << "  level " << p << " value " << val[ p ] << " instead of "
+             << exp[ p ] << std::endl;
+   return( false );
+   }
+ return( true );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_stage_data( void )
+{
+ std::cout << "the stage structure of HQPBlock" << std::endl;
+ const int e0 = errors;
+
+ // the getters
+ HQPBlock block;
+ load( block , integrator_data() );
+ CHECK( block.get_num_stages() == 2 );
+ CHECK( block.get_var_stage() == std::vector< Index >( { 0 , 1 , 1 , 2 } ) );
+ CHECK( block.get_var_state() == std::vector< Index >( { 0 , 0 , 1 , 1 } ) );
+ CHECK( block.get_eq_stage().empty() && block.get_ineq_stage().empty() );
+ CHECK( block.get_dynamics_level() == 0 );
+
+ // no stage structure: an HQPBlock as before
+ load( block , edge_data() );
+ CHECK( block.get_num_stages() == 0 );
+ CHECK( block.get_var_stage().empty() && block.get_var_state().empty() );
+
+ // the errors of load()
+ auto bad = []( const std::function< void( Data & ) > & change ) {
+  Data D = integrator_data();
+  change( D );
+  HQPBlock b;
+  return( throws< std::invalid_argument >( [ & ]() { load( b , D ); } ) );
+  };
+ CHECK( bad( []( Data & D ) { D.st.var_stage.pop_back(); } ) );
+ CHECK( bad( []( Data & D ) { D.st.var_state.push_back( 0 ); } ) );
+ CHECK( bad( []( Data & D ) { D.st.var_state[ 0 ] = 2; } ) );
+ // an input of stage N, a state beyond N
+ CHECK( bad( []( Data & D ) { D.st.var_stage[ 1 ] = 2; } ) );
+ CHECK( bad( []( Data & D ) { D.st.var_stage[ 3 ] = 3; } ) );
+ CHECK( bad( []( Data & D ) { D.st.eq_stage = { 0 , 0 }; } ) );
+ CHECK( bad( []( Data & D ) { D.st.ineq_stage.assign( 6 , 2 ); } ) );
+ CHECK( bad( []( Data & D ) { D.st.dynamics_level = 5; } ) );
+ CHECK( bad( []( Data & D ) { D.st.num_stages = 0; } ) );
+ CHECK( bad( []( Data & D ) { D.st = HQPBlock::StageData();
+                              D.st.dynamics_level = 1; } ) );
+ CHECK( ! bad( []( Data & D ) { D.st.eq_stage = { 0 , 1 , 1 , 0 }; } ) );
+
+ // the netCDF format: what is written, and the round trip
+ const auto file = ( std::filesystem::temp_directory_path() /
+                     "HQPBlock_unit_test_stages.nc4" ).string();
+ for( int given = 0 ; given < 2 ; ++given ) {
+  Data D = integrator_data();
+  if( given ) {
+   D.st.eq_stage = { 0 , 1 , 1 , 0 };
+   D.st.ineq_stage = { 0 , 0 , 1 , 1 , 1 , 1 };
+   D.st.dynamics_level = 0;
+   }
+  load( block , D );
+  block.serialize( file , eBlockFile );
+  {
+   netCDF::NcFile f( file , netCDF::NcFile::read );
+   auto g = block_group( f );
+   CHECK( g.getDim( "NumStages" ).getSize() == 2 );
+   CHECK( ! g.getVar( "VarStage" ).isNull() );
+   CHECK( ! g.getVar( "VarState" ).isNull() );
+   CHECK( ! g.getVar( "DynamicsLevel" ).isNull() );
+   CHECK( g.getVar( "EqStage" ).isNull() != bool( given ) );
+   CHECK( g.getVar( "IneqStage" ).isNull() != bool( given ) );
+   }
+  auto back = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
+  CHECK( back );
+  if( back ) {
+   CHECK( back->get_num_stages() == 2 );
+   CHECK( back->get_var_stage() == block.get_var_stage() );
+   CHECK( back->get_var_state() == block.get_var_state() );
+   CHECK( back->get_eq_stage() == block.get_eq_stage() );
+   CHECK( back->get_ineq_stage() == block.get_ineq_stage() );
+   CHECK( back->get_dynamics_level() == 0 );
+   delete back;
+   }
+  }
+
+ // a file without stage data has none of these variables
+ load( block , edge_data() );
+ block.serialize( file , eBlockFile );
+ {
+  netCDF::NcFile f( file , netCDF::NcFile::read );
+  auto g = block_group( f );
+  CHECK( g.getDim( "NumStages" ).isNull() );
+  CHECK( g.getVar( "VarStage" ).isNull() );
+  CHECK( g.getVar( "DynamicsLevel" ).isNull() );
+  }
+
+ // VarState missing, or a wrong DynamicsLevel, is refused
+ load( block , integrator_data() );
+ block.serialize( file , eBlockFile );
+ {
+  netCDF::NcFile f( file , netCDF::NcFile::write );
+  auto g = block_group( f );
+  g.getVar( "DynamicsLevel" ).putVar( std::vector< size_t >() , 7u );
+  }
+ {
+  netCDF::NcFile f( file , netCDF::NcFile::read );
+  auto g = block_group( f );
+  HQPBlock b;
+  CHECK( throws< std::invalid_argument >( [ & ]() { b.deserialize( g ); } ) );
+  }
+ std::filesystem::remove( file );
+
+ // print()
+ std::ostringstream s0 , s1;
+ block.print( s0 );
+ block.print( s1 , 1 );
+ CHECK( s0.str().find( " 2 stages, the dynamics at level 0\n" ) !=
+        std::string::npos );
+ CHECK( s1.str().find( "  stage of each column (s state, u input): u0 u1 "
+                       "s1 s2\n" ) != std::string::npos );
+
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+/*---------------------- THE RECURSION OF StageEQP -------------------------*/
+/*--------------------------------------------------------------------------*/
+
+using EVec = Eigen::VectorXd;
+using EQP = HQPStageSolver::StageEQP;
+
+// the kinds of dependent rows of a random StageEQP
+enum Dependent { kNone = 0 , kInStage = 1 , kThroughDynamics = 2 ,
+                 kInconsistent = 4 };
+
+/*--------------------------------------------------------------------------*/
+// a random StageEQP with nx[ k ] states and nu[ k ] inputs at stage k,
+// mrow[ k ] rows (k = 0 .. N, mrow[ N ] those on x_N), ntask task rows per
+// stage in the cost and the regularization eps; the rows hold at a random
+// trajectory, unless kInconsistent, which moves one dependent row; the
+// coefficients of the rows on x are multiplied by gs, so that the inputs
+// they fix do not make the closed loop unstable
+
+static EQP random_eqp( unsigned seed , const std::vector< Index > & nx ,
+                       const std::vector< Index > & nu ,
+                       const std::vector< Index > & mrow , Index ntask ,
+                       double eps , int dep , double gs = 1 )
+{
+ std::mt19937 g( seed );
+ std::normal_distribution< double > nd( 0 , 1 );
+ auto rnd = [ & ]( Index r , Index c ) {
+  Mat M( r , c );
+  for( Index i = 0 ; i < r ; ++i )
+   for( Index j = 0 ; j < c ; ++j )
+    M( i , j ) = nd( g );
+  return( M );
+  };
+
+ const Index N = nu.size();
+ EQP e;
+ e.resize( N );
+ std::vector< EVec > xb( N + 1 ) , ub( N );
+ xb[ 0 ] = rnd( nx[ 0 ] , 1 );
+ for( Index k = 0 ; k < N ; ++k ) {
+  e.A[ k ] = Mat::Identity( nx[ k + 1 ] , nx[ k ] ) +
+             0.05 * rnd( nx[ k + 1 ] , nx[ k ] );
+  e.B[ k ] = rnd( nx[ k + 1 ] , nu[ k ] );
+  e.c[ k ] = 0.1 * rnd( nx[ k + 1 ] , 1 );
+  ub[ k ] = rnd( nu[ k ] , 1 );
+  xb[ k + 1 ] = e.A[ k ] * xb[ k ] + e.B[ k ] * ub[ k ] + e.c[ k ];
+  }
+ for( Index k = 0 ; k <= N ; ++k ) {
+  const Index m = ( k < N ) ? nu[ k ] : 0;
+  const Mat T = rnd( ntask , nx[ k ] + m );
+  const EVec t = rnd( ntask , 1 );
+  const Mat Hs = T.transpose() * T +
+                 eps * Mat::Identity( nx[ k ] + m , nx[ k ] + m );
+  const EVec hs = - T.transpose() * t;
+  e.Q[ k ] = Hs.topLeftCorner( nx[ k ] , nx[ k ] );
+  e.q[ k ] = hs.head( nx[ k ] );
+  if( k < N ) {
+   e.R[ k ] = Hs.bottomRightCorner( m , m );
+   e.S[ k ] = Hs.bottomLeftCorner( m , nx[ k ] );
+   e.r[ k ] = hs.tail( m );
+   }
+  e.G[ k ] = gs * rnd( mrow[ k ] , nx[ k ] );
+  e.H[ k ] = rnd( mrow[ k ] , m );
+  if( ( dep & kInStage ) && ( mrow[ k ] >= 2 ) ) {
+   // a combination of the first two rows
+   const Index r = e.G[ k ].rows();
+   e.G[ k ].conservativeResize( r + 1 , Eigen::NoChange );
+   e.H[ k ].conservativeResize( r + 1 , Eigen::NoChange );
+   e.G[ k ].row( r ) = e.G[ k ].row( 0 ) + 2 * e.G[ k ].row( 1 );
+   e.H[ k ].row( r ) = e.H[ k ].row( 0 ) + 2 * e.H[ k ].row( 1 );
+   }
+  e.g[ k ] = e.G[ k ] * xb[ k ];
+  if( k < N )
+   e.g[ k ] += e.H[ k ] * ub[ k ];
+  }
+ if( dep & kThroughDynamics )
+  // a row of stage k + 1 on x_{k+1} only, written also at stage k
+  for( Index k = 0 ; k + 1 < N ; k += 2 ) {
+   if( ! nx[ k + 1 ] )
+    continue;
+   const Mat a = rnd( 1 , nx[ k + 1 ] );
+   auto add = [ & ]( Index s , const Mat & Gr , const Mat & Hr , double v ) {
+    const Index r = e.G[ s ].rows();
+    e.G[ s ].conservativeResize( r + 1 , Eigen::NoChange );
+    e.H[ s ].conservativeResize( r + 1 , Eigen::NoChange );
+    e.g[ s ].conservativeResize( r + 1 );
+    e.G[ s ].row( r ) = Gr;
+    e.H[ s ].row( r ) = Hr;
+    e.g[ s ]( r ) = v;
+    };
+   add( k + 1 , a , Mat::Zero( 1 , nu[ k + 1 ] ) , ( a * xb[ k + 1 ] )( 0 ) );
+   add( k , a * e.A[ k ] , a * e.B[ k ] ,
+        ( a * ( xb[ k + 1 ] - e.c[ k ] ) )( 0 ) );
+   }
+ if( dep & kInconsistent )
+  for( Index k = 0 ; k <= N ; ++k )
+   if( e.g[ k ].size() > mrow[ k ] ) {
+    e.g[ k ]( e.g[ k ].size() - 1 ) += 1e-3;
+    break;
+    }
+ // the rows of x_N have no input
+ e.H[ N ].resize( e.G[ N ].rows() , 0 );
+ return( e );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the KKT system of the whole horizon, z = ( x_0 , u_0 , x_1 , ... , x_N ),
+// solved by a complete orthogonal decomposition (dependent rows allowed);
+// returns the trajectory
+
+static void dense_kkt( const EQP & e , std::vector< EVec > & x ,
+                       std::vector< EVec > & u )
+{
+ const Index N = e.num_stages();
+ std::vector< Index > xi( N + 1 ) , ui( N );
+ Index nz = 0 , m = 0;
+ for( Index k = 0 ; k <= N ; ++k ) {
+  xi[ k ] = nz;
+  nz += e.Q[ k ].rows();
+  if( k < N ) {
+   ui[ k ] = nz;
+   nz += e.R[ k ].rows();
+   m += e.A[ k ].rows();
+   }
+  m += e.G[ k ].rows();
+  }
+ Mat K = Mat::Zero( nz + m , nz + m );
+ EVec rhs = EVec::Zero( nz + m );
+ Index row = nz;
+ for( Index k = 0 ; k <= N ; ++k ) {
+  const Index nx = e.Q[ k ].rows();
+  K.block( xi[ k ] , xi[ k ] , nx , nx ) = e.Q[ k ];
+  rhs.segment( xi[ k ] , nx ) = - e.q[ k ];
+  auto put = [ & ]( Index r , Index c , const Mat & M ) {
+   K.block( r , c , M.rows() , M.cols() ) = M;
+   K.block( c , r , M.cols() , M.rows() ) = M.transpose();
+   };
+  if( k < N ) {
+   const Index n_u = e.R[ k ].rows();
+   K.block( ui[ k ] , ui[ k ] , n_u , n_u ) = e.R[ k ];
+   K.block( ui[ k ] , xi[ k ] , n_u , nx ) = e.S[ k ];
+   K.block( xi[ k ] , ui[ k ] , nx , n_u ) = e.S[ k ].transpose();
+   rhs.segment( ui[ k ] , n_u ) = - e.r[ k ];
+   const Index nd = e.A[ k ].rows();
+   put( row , xi[ k + 1 ] , - Mat::Identity( nd , nd ) );
+   put( row , xi[ k ] , e.A[ k ] );
+   put( row , ui[ k ] , e.B[ k ] );
+   rhs.segment( row , nd ) = - e.c[ k ];
+   row += nd;
+   }
+  const Index mg = e.G[ k ].rows();
+  if( mg ) {
+   put( row , xi[ k ] , e.G[ k ] );
+   if( k < N )
+    put( row , ui[ k ] , e.H[ k ] );
+   rhs.segment( row , mg ) = e.g[ k ];
+   row += mg;
+   }
+  }
+ const EVec sol = Eigen::CompleteOrthogonalDecomposition< Mat >( K )
+                  .solve( rhs );
+ x.assign( N + 1 , EVec() );
+ u.assign( N , EVec() );
+ for( Index k = 0 ; k <= N ; ++k ) {
+  x[ k ] = sol.segment( xi[ k ] , e.Q[ k ].rows() );
+  if( k < N )
+   u[ k ] = sol.segment( ui[ k ] , e.R[ k ].rows() );
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+// the objective of e at a trajectory
+
+static double eqp_value( const EQP & e , const std::vector< EVec > & x ,
+                         const std::vector< EVec > & u )
+{
+ const Index N = e.num_stages();
+ double v = 0;
+ for( Index k = 0 ; k <= N ; ++k ) {
+  v += 0.5 * x[ k ].dot( e.Q[ k ] * x[ k ] ) + e.q[ k ].dot( x[ k ] );
+  if( k < N )
+   v += u[ k ].dot( e.S[ k ] * x[ k ] ) +
+        0.5 * u[ k ].dot( e.R[ k ] * u[ k ] ) + e.r[ k ].dot( u[ k ] );
+  }
+ return( v );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the largest residual of the dynamics and of the rows at the solution of e
+
+static double eqp_residual( const EQP & e )
+{
+ const Index N = e.num_stages();
+ double r = 0;
+ for( Index k = 0 ; k <= N ; ++k ) {
+  EVec g = e.G[ k ] * e.x[ k ] - e.g[ k ];
+  if( k < N ) {
+   g += e.H[ k ] * e.u[ k ];
+   r = std::max( r , ( e.A[ k ] * e.x[ k ] + e.B[ k ] * e.u[ k ] + e.c[ k ] -
+                       e.x[ k + 1 ] ).lpNorm< Eigen::Infinity >() );
+   }
+  if( g.size() )
+   r = std::max( r , g.lpNorm< Eigen::Infinity >() );
+  }
+ return( r );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the largest residual of the stationarity conditions with the multipliers
+// of e: the costates backward from lambda_N, the conditions on each u_k and
+// on the free x_0
+
+static double eqp_stationarity( const EQP & e )
+{
+ const Index N = e.num_stages();
+ EVec lam = e.Q[ N ] * e.x[ N ] + e.q[ N ] + e.G[ N ].transpose() * e.mu[ N ];
+ double r = 0;
+ for( Index k = N ; k-- > 0 ; ) {
+  const EVec gu = e.R[ k ] * e.u[ k ] + e.S[ k ] * e.x[ k ] + e.r[ k ] +
+                  e.B[ k ].transpose() * lam +
+                  e.H[ k ].transpose() * e.mu[ k ];
+  if( gu.size() )
+   r = std::max( r , gu.lpNorm< Eigen::Infinity >() );
+  lam = e.Q[ k ] * e.x[ k ] + e.S[ k ].transpose() * e.u[ k ] + e.q[ k ] +
+        e.A[ k ].transpose() * lam + e.G[ k ].transpose() * e.mu[ k ];
+  }
+ if( lam.size() )
+  r = std::max( r , lam.lpNorm< Eigen::Infinity >() );
+ return( r );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the recursion against the dense KKT system on a random StageEQP: the same
+// trajectory (to xtol, relative), objective, rows satisfied and multipliers
+// satisfying the stationarity conditions (to the same); kInconsistent must
+// be reported
+
+static void eqp_case( const std::string & name , unsigned seed ,
+                      const std::vector< Index > & nx ,
+                      const std::vector< Index > & nu ,
+                      const std::vector< Index > & mrow , Index ntask ,
+                      double eps , int dep , double xtol = 1e-7 ,
+                      double gs = 1 )
+{
+ const int e0 = errors;
+ EQP e = random_eqp( seed , nx , nu , mrow , ntask , eps , dep , gs );
+ const double incons = e.solve( 0 );
+ if( dep & kInconsistent ) {
+  CHECK( incons > 1e-5 );
+  std::cout << " recursion, " << name << ": inconsistency " << incons
+            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  return;
+  }
+
+ std::vector< EVec > xk , uk;
+ dense_kkt( e , xk , uk );
+ double dx = 0 , sc = 1;
+ for( Index k = 0 ; k < xk.size() ; ++k ) {
+  if( xk[ k ].size() ) {
+   dx = std::max( dx , ( e.x[ k ] - xk[ k ] ).lpNorm< Eigen::Infinity >() );
+   sc = std::max( sc , xk[ k ].lpNorm< Eigen::Infinity >() );
+   }
+  if( ( k < uk.size() ) && uk[ k ].size() ) {
+   dx = std::max( dx , ( e.u[ k ] - uk[ k ] ).lpNorm< Eigen::Infinity >() );
+   sc = std::max( sc , uk[ k ].lpNorm< Eigen::Infinity >() );
+   }
+  }
+ const double fr = eqp_value( e , e.x , e.u ) , fk = eqp_value( e , xk , uk );
+ const double res = eqp_residual( e ) , sta = eqp_stationarity( e );
+ CHECK( incons < 1e-9 );
+ CHECK( dx <= xtol * sc );
+ CHECK( std::abs( fr - fk ) <= 1e-9 * std::max( 1.0 , std::abs( fk ) ) );
+ CHECK( res <= 1e-9 * sc );
+ CHECK( sta <= xtol * sc );
+ if( dep & ( kInStage | kThroughDynamics ) )
+  CHECK( e.dropped > 0 );
+ std::cout << " recursion, " << name << ": |x - KKT| " << dx
+           << ", objective " << fr << " vs " << fk << ", rows " << res
+           << ", stationarity " << sta << ", dropped " << e.dropped
+           << ", to go " << e.to_go << ( errors == e0 ? " -> OK" : " -> KO" )
+           << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_recursion( void )
+{
+ std::cout << "the Riccati recursion of HQPStageSolver::StageEQP"
+           << std::endl;
+ auto rep = []( Index n , Index v ) { return( std::vector< Index >( n , v ) );
+  };
+
+ // the size of one robot of the radial scenario, 0 to 2 rows per stage
+ std::vector< Index > m10( 11 );
+ for( Index k = 0 ; k <= 10 ; ++k )
+  m10[ k ] = k % 3;
+ eqp_case( "one robot" , 1 , rep( 11 , 4 ) , rep( 10 , 2 ) , m10 , 2 , 1e-6 ,
+           kNone );
+
+ // more rows than inputs: constraints-to-go at every stage
+ eqp_case( "more rows than inputs" , 2 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
+           { 3 , 0 , 3 , 1 , 3 , 0 , 3 , 0 , 1 } , 2 , 1e-6 , kNone );
+
+ // as many rows as inputs: no freedom left in u
+ eqp_case( "inputs fixed by the rows" , 3 , rep( 7 , 3 ) , rep( 6 , 2 ) ,
+           { 2 , 2 , 2 , 2 , 2 , 2 , 0 } , 1 , 1e-6 , kNone , 1e-7 , 0.1 );
+
+ // dependent rows in a stage, and through the dynamics
+ eqp_case( "dependent rows in a stage" , 4 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
+           { 2 , 3 , 0 , 2 , 2 , 3 , 0 , 2 , 0 } , 2 , 1e-6 , kInStage );
+ eqp_case( "rows dependent through the dynamics" , 5 , rep( 9 , 4 ) ,
+           rep( 8 , 2 ) , { 1 , 0 , 1 , 0 , 1 , 0 , 1 , 0 , 0 } , 2 , 1e-6 ,
+           kThroughDynamics );
+ eqp_case( "both" , 6 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
+           { 2 , 2 , 2 , 2 , 2 , 2 , 2 , 2 , 0 } , 2 , 1e-6 ,
+           kInStage | kThroughDynamics );
+
+ // rows on x_N, a free x_0 constrained by the rows of stage 0
+ eqp_case( "rows on x_0 and x_N" , 7 , rep( 6 , 3 ) , rep( 5 , 1 ) ,
+           { 2 , 1 , 0 , 1 , 0 , 2 } , 1 , 1e-6 , kNone );
+
+ // x_0 of size 0, as with no initial state among the columns, and sizes
+ // that change along the stages
+ eqp_case( "x_0 of size 0" , 8 , { 0 , 2 , 3 , 3 , 4 , 2 } ,
+           { 2 , 1 , 2 , 3 , 1 } , { 1 , 0 , 2 , 1 , 3 , 1 } , 1 , 1e-6 ,
+           kNone );
+
+ // a single stage, and stages with no input
+ eqp_case( "one stage" , 9 , { 3 , 3 } , { 2 } , { 1 , 1 } , 2 , 1e-6 ,
+           kNone );
+ eqp_case( "stages with no input" , 10 , rep( 5 , 2 ) , { 1 , 0 , 2 , 0 } ,
+           { 1 , 1 , 0 , 1 , 0 } , 2 , 1e-6 , kNone );
+
+ // the size of the 8 robots of the radial scenario
+ std::vector< Index > m8( 11 );
+ for( Index k = 0 ; k <= 10 ; ++k )
+  m8[ k ] = ( 5 * k ) % 17;
+ m8[ 10 ] = 3;
+ eqp_case( "eight robots" , 11 , rep( 11 , 32 ) , rep( 10 , 16 ) , m8 , 16 ,
+           1e-6 , kNone , 1e-3 );
+
+ // a dependent row that is not consistent
+ eqp_case( "an inconsistent row" , 12 , rep( 5 , 3 ) , rep( 4 , 2 ) ,
+           { 2 , 2 , 2 , 2 , 0 } , 1 , 1e-6 , kInStage | kInconsistent );
+
+ // no regularization and one task row: Z singular, the minimum-norm step
+ {
+  const int e0 = errors;
+  EQP e = random_eqp( 13 , rep( 5 , 3 ) , rep( 4 , 3 ) , { 1 , 0 , 1 , 0 , 0 }
+                      , 1 , 0 , kNone );
+  e.solve( 0 );
+  std::vector< EVec > xk , uk;
+  dense_kkt( e , xk , uk );
+  const double fr = eqp_value( e , e.x , e.u ) , fk = eqp_value( e , xk , uk );
+  CHECK( eqp_residual( e ) <= 1e-8 );
+  CHECK( fr <= fk + 1e-8 * std::max( 1.0 , std::abs( fk ) ) );
+  std::cout << " recursion, no regularization: objective " << fr << " vs "
+            << fk << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+/*------------------------- THE HQPStageSolver -----------------------------*/
+/*--------------------------------------------------------------------------*/
+
+static void test_stage_solver( void )
+{
+ std::cout << "HQPStageSolver" << std::endl;
+
+ // the levels of the integrator, whose values are known; with the stages
+ // of the rows given, the same
+ for( int given = 0 ; given < 2 ; ++given ) {
+  const int e0 = errors;
+  Data D = integrator_data();
+  if( given ) {
+   D.st.eq_stage = { 0 , 1 , 1 , 0 };
+   D.st.ineq_stage = { 0 , 0 , 1 , 1 , 1 , 1 };
+   }
+  HQPBlock block;
+  load( block , D );
+  Cascade cs( block );
+  const auto val = cs.run();
+  CHECK( cs.status == Solver::kOK );
+  CHECK( values_are( val , { 0 , 0 , 0 , 4.5 , 0.5 } , 1e-7 ) );
+  Vec x;
+  block.get_x_values( x );
+  CHECK( std::abs( x[ 0 ] - 1 ) + std::abs( x[ 1 ] - 1 ) +
+         std::abs( x[ 2 ] - 1 ) + std::abs( x[ 3 ] - 2 ) < 1e-6 );
+  std::cout << " the integrator" << ( given ? ", stages of the rows given"
+                                            : "" ) << ": values 0, 0, 0, "
+            << "9/2, 1/2 in " << cs.iter << " iterations"
+            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  }
+
+ // the initial state among the columns: x_0 is chosen too
+ {
+  const int e0 = errors;
+  HQPBlock block;
+  load( block , initial_state_data() );
+  Cascade cs( block );
+  const auto val = cs.run();
+  CHECK( cs.status == Solver::kOK );
+  CHECK( values_are( val , { 0 , 0 , 0 , 2 } , 1e-7 ) );
+  std::cout << " the initial state as a column: values 0, 0, 0, 2"
+            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  }
+
+ // dependent rows: two equal rows of the goal asking for 5 and 7 (their
+ // mean, value (9 + 25) / 2), which the next levels keep as two dependent
+ // hard rows, and the goal repeated in the last level
+ {
+  const int e0 = errors;
+  Data D = integrator_data();
+  Mat A3( 2 , 4 ) , A4( 2 , 4 );
+  A3 << 0 , 0 , 0 , 1 ,
+        0 , 0 , 0 , 1;
+  A4 << 0 , 0 , 1 , 0 ,
+        0 , 0 , 0 , 1;
+  D.A[ 3 ] = A3;
+  D.b[ 3 ] = { 5 , 7 };
+  D.A[ 4 ] = A4;
+  D.b[ 4 ] = { 0 , 5 };
+  HQPBlock block;
+  load( block , D );
+  Cascade cs( block );
+  const auto val = cs.run();
+  CHECK( cs.status == Solver::kOK );
+  CHECK( values_are( val , { 0 , 0 , 0 , 17 , 5 } , 1e-7 ) );
+  std::cout << " dependent rows: values 0, 0, 0, 17, 5"
+            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  }
+
+ // a step of Model Predictive Control: the goal moves (set_b(), the
+ // dynamics kept) and then the dynamics change (set_A(), computed anew);
+ // the warm start takes no more iterations than the cold one, and both agree
+ // with a new Solver of the new data
+ {
+  const int e0 = errors;
+  Data D = integrator_data();
+  HQPBlock warm , cold;
+  load( warm , D );
+  load( cold , D );
+  Cascade cw( warm ) , cc( cold );
+  for( Index p = 0 ; p < warm.get_num_levels() ; ++p )
+   cc.solver( p )->set_par( HQPStageSolver::intWarmStart , 0 );
+  cw.run();
+  cc.run();
+  long iw = 0 , ic = 0;
+  for( int k = 0 ; k < 2 ; ++k ) {
+   if( k == 0 ) {
+    warm.set_b( 3 , { 1.5 } );
+    cold.set_b( 3 , { 1.5 } );
+    }
+   else {
+    Mat A0( 2 , 4 );
+    A0 << -0.5 , 0 , 1 , 0 ,
+           0 , -0.5 , -1 , 1;
+    warm.set_A( 0 , sparse( A0 ) );
+    cold.set_A( 0 , sparse( A0 ) );
+    }
+   const auto vw = cw.run();
+   iw += cw.iter;
+   const auto vc = cc.run();
+   ic += cc.iter;
+   // a new HQPBlock with the new data
+   HQPBlock fresh;
+   Data F = D;
+   F.b[ 3 ] = { 1.5 };
+   if( k ) {
+    F.A[ 0 ] << -0.5 , 0 , 1 , 0 ,
+                 0 , -0.5 , -1 , 1;
+    }
+   load( fresh , F );
+   Cascade cf( fresh );
+   const auto vf = cf.run();
+   CHECK( ( cw.status == Solver::kOK ) && ( cc.status == Solver::kOK ) );
+   CHECK( values_are( vw , vf , 1e-9 ) );
+   CHECK( values_are( vc , vf , 1e-9 ) );
+   }
+  CHECK( iw <= ic );
+  std::cout << " two steps of Model Predictive Control: iterations warm "
+            << iw << ", cold " << ic << ( errors == e0 ? " -> OK" : " -> KO" )
+            << std::endl;
+  }
+
+ // what does not fit, and the parameters
+ {
+  const int e0 = errors;
+  auto refused = []( HQPBlock & block , Index level ) {
+   Cascade cs( block );
+   generate( block );
+   block.reset_levels( true );
+   for( Index p = 0 ; p < level ; ++p ) {
+    cs.solver( p )->compute();
+    cs.solver( p )->get_var_solution();
+    block.next_level();
+    }
+   return( throws< std::invalid_argument >( [ & ]() {
+    cs.solver( level )->compute(); } ) );
+   };
+
+  // no stage structure
+  HQPBlock b0;
+  load( b0 , small_data() );
+  CHECK( refused( b0 , 0 ) );
+
+  // a level above that of the dynamics
+  Data D1 = integrator_data();
+  std::swap( D1.A[ 0 ] , D1.A[ 3 ] );
+  std::swap( D1.b[ 0 ] , D1.b[ 3 ] );
+  D1.st.dynamics_level = 3;
+  HQPBlock b1;
+  load( b1 , D1 );
+  CHECK( refused( b1 , 0 ) );
+
+  // a row of the dynamics with two states of its stage
+  Data D2 = integrator_data();
+  D2.A[ 0 ]( 1 , 2 ) = 1;
+  D2.A[ 0 ]( 0 , 3 ) = 1;
+  HQPBlock b2;
+  load( b2 , D2 );
+  CHECK( refused( b2 , 0 ) );
+
+  // a row out of its given stage (s_2 at stage 0): refused at its level,
+  // not before
+  Data D3 = integrator_data();
+  D3.st.eq_stage = { 0 , 1 , 0 , 0 };
+  HQPBlock b3;
+  load( b3 , D3 );
+  CHECK( ! refused( b3 , 2 ) );
+  HQPBlock b4;
+  load( b4 , D3 );
+  CHECK( refused( b4 , 3 ) );
+
+  // a Block that is not an HQPBlock
+  HQPDistBlock db;
+  db.load( b0 , 2 , { 0 , 1 } );
+  HQPStageSolver s;
+  s.set_Block( & db );
+  CHECK( throws< std::invalid_argument >( [ & ]() { s.compute(); } ) );
+  s.set_Block( nullptr );
+
+  // the parameters
+  CHECK( s.get_int_par( HQPStageSolver::intWarmStart ) == 1 );
+  CHECK( s.get_int_par( Solver::intMaxIter ) == 10000 );
+  CHECK( s.get_dbl_par( HQPStageSolver::dblRankTol ) == 0 );
+  CHECK( s.int_par_str2idx( "intWarmStart" ) == HQPStageSolver::intWarmStart );
+  CHECK( s.dbl_par_str2idx( "dblRankTol" ) == HQPStageSolver::dblRankTol );
+  CHECK( s.dbl_par_idx2str( HQPStageSolver::dblDualTol ) == "dblDualTol" );
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+   s.set_par( HQPStageSolver::intWarmStart , 2 ); } ) );
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+   s.set_par( HQPStageSolver::dblRankTol , -1.0 ); } ) );
+
+  // an iteration limit stops a level before its optimum
+  HQPBlock b5;
+  load( b5 , integrator_data() );
+  Cascade c5( b5 );
+  for( Index p = 0 ; p < b5.get_num_levels() ; ++p )
+   c5.solver( p )->set_par( Solver::intMaxIter , 1 );
+  c5.run();
+  CHECK( c5.status == Solver::kStopIter );
+
+  std::cout << " what does not fit, the parameters and the iteration limit"
+            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+/*-------------------------- THE INSTANCE FILES ----------------------------*/
+/*--------------------------------------------------------------------------*/
+// the levels of the HQPBlock of an instance file solved by HQPStageSolver,
+// against those at the solution of each level that the file carries (the
+// group HQPReference, written by the code that generated it)
+
+static void test_file( const std::string & file )
+{
+ const int e0 = errors;
+ const std::string nm = std::filesystem::path( file ).stem().string();
+ auto block = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
+ if( ! block ) {
+  std::cout << " " << nm << ": cannot read the HQPBlock -> KO" << std::endl;
+  ++errors;
+  return;
+  }
+ CHECK( block->get_num_stages() > 0 );
+
+ const Index P = block->get_num_levels() , n = block->get_num_var();
+ Mat X( P , n );
+ {
+  netCDF::NcFile f( file , netCDF::NcFile::read );
+  Eigen::Matrix< double , Eigen::Dynamic , Eigen::Dynamic , Eigen::RowMajor >
+   Xr( P , n );
+  f.getGroup( "HQPReference" ).getVar( "X" ).getVar( Xr.data() );
+  X = Xr;
+  }
+
+ std::vector< double > ref;
+ for( Index p = 0 ; p < P ; ++p ) {
+  Vec x( n );
+  for( Index j = 0 ; j < n ; ++j )
+   x[ j ] = X( p , j );
+  generate( *block );
+  block->set_x_values( x );
+  Vec v , w;
+  ref.push_back( block->level_slacks( p , v , w ) );
+  }
+
+ {
+  Cascade cs( *block );
+  const auto val = cs.run();
+  CHECK( cs.status == Solver::kOK );
+  CHECK( values_are( val , ref , 1e-5 ) );
+  Vec x;
+  block->get_x_values( x );
+  double dx = 0;
+  for( Index j = 0 ; j < n ; ++j )
+   dx = std::max( dx , std::abs( x[ j ] - X( P - 1 , j ) ) );
+  std::cout << " " << nm << ": " << P << " levels, " << n << " columns, "
+            << block->get_num_stages() << " stages, " << cs.iter
+            << " iterations, |x - file| " << dx << ", values";
+  for( Index p = 0 ; p < P ; ++p )
+   std::cout << " " << val[ p ] << " (" << ref[ p ] << ")";
+  std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+  }
+ delete block;
+ }
+
+/*--------------------------------------------------------------------------*/
 
 int main( int argc , char ** argv )
 {
+ // the instance files given, if any, and nothing else
+ if( argc > 1 ) {
+  std::cout << "HQPStageSolver on the instance files" << std::endl;
+  for( int i = 1 ; i < argc ; ++i )
+   test_file( argv[ i ] );
+  std::cout << ( errors ? "HQPBlock: FAILED" : "HQPBlock: all tests passed" )
+            << std::endl;
+  return( errors ? 1 : 0 );
+  }
+
  test_load();
  test_abstract();
  test_levels();
@@ -1566,6 +2488,9 @@ int main( int argc , char ** argv )
  test_scale();
  test_dist();
  test_dist_benders();
+ test_stage_data();
+ test_recursion();
+ test_stage_solver();
 
  std::cout << ( errors ? "HQPBlock: FAILED" : "HQPBlock: all tests passed" )
            << std::endl;

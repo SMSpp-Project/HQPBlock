@@ -260,7 +260,16 @@ class HQPLevelBlock : public Block
  *
  * Only the data is serialized [see deserialize()]: the current level, the
  * fixed slacks and the center of the regularization are a state of the
- * solution process, not of the model. */
+ * solution process, not of the model.
+ *
+ * The HQPBlock can also carry, optionally, the stage structure of an
+ * optimal control problem over \f$ N \f$ stages [see StageData]: the stage
+ * \f$ k \f$ of each column, and whether it is a component of the input
+ * \f$ u_k \f$ (\f$ k < N \f$) or of the state \f$ s_k \f$ (\f$ k \leq N
+ * \f$), the stage of each row (optionally) and the level whose equality
+ * rows are the dynamics \f$ s_{k+1} = A_k s_k + B_k u_k + c_k \f$. The
+ * HQPBlock does nothing with them but keep and serialize them, for a Solver
+ * that exploits them [see HQPStageSolver]. */
 
 class HQPBlock : public HQPLevelBlock
 {
@@ -278,6 +287,39 @@ class HQPBlock : public HQPLevelBlock
   kFree = 0 ,  ///< the slacks are free and the rows enforced
   kFixed ,     ///< the slacks are fixed at their optimum, rows enforced
   kOff         ///< the slacks are fixed to 0 and the rows relaxed
+  };
+
+ /// the stage structure of the hierarchy, if any
+ /** The stage structure of an optimal control problem over \f$ N \f$
+  * stages, \f$ N \f$ = num_stages being 0 if there is none (and then all
+  * the rest empty):
+  *
+  * - var_stage[ j ] is the stage \f$ k \f$ of column j, and var_state[ j ]
+  *   is 1 if column j is a component of the state \f$ s_k \f$ (\f$ k \leq N
+  *   \f$), 0 if it is a component of the input \f$ u_k \f$ (\f$ k < N
+  *   \f$); both have size \f$ n \f$;
+  *
+  * - eq_stage[ i ] and ineq_stage[ i ] are the stages of the equality and
+  *   inequality rows of all the levels (in the order of get_b() and
+  *   get_d()), each less than \f$ N \f$; either may be empty, the stage of
+  *   a row being then the largest \f$ k \f$ such that the row has an entry
+  *   on \f$ u_k \f$ or on \f$ s_{k+1} \f$;
+  *
+  * - dynamics_level is the level whose equality rows are the dynamics, one
+  *   for each component of each \f$ s_{k+1} \f$, the row of which has an
+  *   entry on it and on no other component of \f$ s_{k+1} \f$, the others
+  *   being on \f$ s_k \f$ and \f$ u_k \f$. */
+
+ struct StageData {
+  StageData( void ) : num_stages( 0 ) , dynamics_level( 0 ) {}
+  ///< constructor: no stage structure
+
+  Index num_stages;                 ///< the number N of stages, 0 for none
+  std::vector< Index > var_stage;   ///< the stage of each column
+  std::vector< Index > var_state;   ///< 1 if a column is a state, else 0
+  std::vector< Index > eq_stage;    ///< the stage of each equality row
+  std::vector< Index > ineq_stage;  ///< the stage of each inequality row
+  Index dynamics_level;             ///< the level of the dynamics
   };
 
 /*------------------------------ CONSTRUCTOR -------------------------------*/
@@ -315,7 +357,9 @@ class HQPBlock : public HQPLevelBlock
   *
   * - eps is the weight \f$ \varepsilon \f$ of the regularization, and rw
   *   the weights \f$ r_j > 0 \f$ of the variables in it (empty meaning all
-  *   ones).
+  *   ones);
+  *
+  * - stages is the stage structure [see StageData], none by default.
   *
   * As the && tell, the vectors become property of the HQPBlock. If the
   * abstract representation is there already it is constructed anew, and an
@@ -328,7 +372,7 @@ class HQPBlock : public HQPLevelBlock
             std::vector< Vec_double > && d ,
             std::vector< Vec_double > && we = {} ,
             std::vector< Vec_double > && wi = {} , double eps = 0 ,
-            Vec_double && rw = {} );
+            Vec_double && rw = {} , StageData && stages = {} );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// extends Block::deserialize( netCDF::NcGroup )
@@ -372,7 +416,17 @@ class HQPBlock : public HQPLevelBlock
   *
   * - the variable "RegularizationWeight" (netCDF::NcDouble, indexed over
   *   "NumVar"), the weights \f$ r_j \f$, optional (all ones if not
-  *   there). */
+  *   there);
+  *
+  * - the dimension "NumStages", the number \f$ N \f$ of stages of the stage
+  *   structure [see StageData], optional (no stage structure if not there
+  *   or 0), and, if it is there, the variables "VarStage" and "VarState"
+  *   (netCDF::NcUint, indexed over "NumVar"), the stage of each column and
+  *   1 if it is a state, 0 if an input, both mandatory, "EqStage" and
+  *   "IneqStage" (netCDF::NcUint, indexed over "NumEqRows" and
+  *   "NumIneqRows"), the stage of each row, optional, and the scalar
+  *   variable "DynamicsLevel" (netCDF::NcUint), the level of the dynamics,
+  *   optional (0 if not there). */
 
  void deserialize( const netCDF::NcGroup & group ) override;
 
@@ -523,6 +577,53 @@ class HQPBlock : public HQPLevelBlock
 
  [[nodiscard]] const Vec_double & get_center( void ) const {
   return( v_center );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the factor of the whole Objective [see set_objective_scale()]
+
+ [[nodiscard]] double get_objective_scale( void ) const { return( f_scale ); }
+
+/*------------------- Methods for reading the stage data -------------------*/
+ /// returns the number \f$ N \f$ of stages, 0 if there is no stage data
+
+ [[nodiscard]] Index get_num_stages( void ) const {
+  return( f_stages.num_stages );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the stage of each column (empty if there is no stage data)
+
+ [[nodiscard]] const std::vector< Index > & get_var_stage( void ) const {
+  return( f_stages.var_stage );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns 1 for each column that is a state, 0 for an input
+
+ [[nodiscard]] const std::vector< Index > & get_var_state( void ) const {
+  return( f_stages.var_state );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the stage of each equality row, as get_b() (empty: not given)
+
+ [[nodiscard]] const std::vector< Index > & get_eq_stage( void ) const {
+  return( f_stages.eq_stage );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the stage of each inequality row, as get_d() (empty: not given)
+
+ [[nodiscard]] const std::vector< Index > & get_ineq_stage( void ) const {
+  return( f_stages.ineq_stage );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the level whose equality rows are the dynamics
+
+ [[nodiscard]] Index get_dynamics_level( void ) const {
+  return( f_stages.dynamics_level );
   }
 
 /*------------ Methods for reading the abstract representation -------------*/
@@ -747,8 +848,9 @@ class HQPBlock : public HQPLevelBlock
 
 /*---------------------------- Methods for printing ------------------------*/
  /// prints the HQPBlock on an ostream with the given verbosity
- /** Prints the sizes of the HQPBlock and, if \p vlvl > 0, also its data,
-  * level by level. */
+ /** Prints the sizes of the HQPBlock and of its stage structure, if any,
+  * and, if \p vlvl > 0, also its data, level by level, and the stage of
+  * each column. */
 
  void print( std::ostream & output , char vlvl = 0 ) const override;
 
@@ -756,7 +858,8 @@ class HQPBlock : public HQPLevelBlock
  /// extends Block::serialize( netCDF::NcGroup )
  /** Extends Block::serialize( netCDF::NcGroup ) to the specific format of
   * an HQPBlock [see deserialize()]. The weights are written only if one is
-  * not 1, the regularization only if it is not 0. */
+  * not 1, the regularization only if it is not 0, the stage structure only
+  * if there is one (the stages of the rows only if they were given). */
 
  void serialize( netCDF::NcGroup & group ) const override;
 
@@ -785,7 +888,7 @@ class HQPBlock : public HQPLevelBlock
                     std::vector< Vec_double > && d ,
                     std::vector< Vec_double > && we ,
                     std::vector< Vec_double > && wi , double eps ,
-                    Vec_double && rw );
+                    Vec_double && rw , StageData && stages );
 
  /// the constant \f$ \varepsilon \sum_j r_j c_j^2 / 2 \f$ of the Objective
 
@@ -852,6 +955,8 @@ class HQPBlock : public HQPLevelBlock
  double f_scale = 1;                ///< factor of the whole Objective
  Vec_double v_rw;                   ///< weights of the variables in it
  Vec_double v_center;               ///< center of the regularization
+
+ StageData f_stages;                ///< the stage structure, if any
 
  std::vector< ColVariable > v_x;    ///< the variables x
  std::vector< ColVariable > v_v;    ///< the slacks of the equality rows

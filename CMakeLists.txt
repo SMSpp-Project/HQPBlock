@@ -126,7 +126,8 @@ endif ()
 target_sources(${modName} PRIVATE
         src/HQPBlock.cpp
         src/HQPDistBlock.cpp
-        src/HQPSolver.cpp)
+        src/HQPSolver.cpp
+        src/HQPStageSolver.cpp)
 
 # When using target_include_directories(), PUBLIC means that any targets
 # that link to this target also need that include directory.
@@ -210,7 +211,7 @@ endif ()
 # tree holding the data of an older version (a cache of the CI, or a clone
 # that has been extracted before) downloads and extracts again instead of
 # taking them for the current ones.
-set(DATA_VERSION 2026-10-26)
+set(DATA_VERSION 2026-10-31)
 set(DATA_PROJECT 88117102)
 set(DATA_PREFIX hqp)
 set(DATA_FORMATS nc4)
