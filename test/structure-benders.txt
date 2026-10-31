@@ -8,7 +8,6 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 SimpleConfiguration<int>  # exact type of the Configuration object
-
 1  # kBenders
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
