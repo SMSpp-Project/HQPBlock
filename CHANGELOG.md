@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - the unit test of `HQPBlock` and `HQPDistBlock`, which needs the core
   library only: the methods of the Blocks and the Modification they issue,
   the netCDF format and its degenerate cases, checked without solving
+### Changed
+
+- the README points to the installation guide of the wiki
+  (Installing-SMS++) for the channels that distribute SMS++
+
 ### Fixed
 
 - with the compilers of MinGW (MSYS2) the target asks whoever links it

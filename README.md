@@ -119,6 +119,10 @@ degenerate hierarchies and on the instances of `data/nc4`.
 These instructions will let you build the `HQPBlock` module on
 your system.
 
+The channels that distribute SMS++ are listed in its [installation
+guide](https://gitlab.com/smspp/smspp-project/-/wikis/Installing-SMS++); what
+follows is about building the module yourself.
+
 ### Requirements
 
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
