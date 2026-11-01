@@ -191,8 +191,8 @@ static void load( HQPBlock & block , const Data & D )
  auto b = D.b , d = D.d , we = D.we , wi = D.wi;
  auto st = D.st;
  block.load( D.n , std::move( A ) , std::move( b ) , std::move( C ) ,
-             std::move( d ) , std::move( we ) , std::move( wi ) , D.eps ,
-             {} , std::move( st ) );
+	     std::move( d ) , std::move( we ) , std::move( wi ) , D.eps , {} ,
+	     std::move( st ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1601,14 +1601,9 @@ static Data integrator_data( void )
  D.n = 4;
  D.eps = 1e-10;
  Mat A0( 2 , 4 ) , C1( 4 , 4 ) , C2( 2 , 4 ) , A3( 1 , 4 ) , A4( 1 , 4 );
- A0 << -1 , 0 , 1 , 0 ,
-        0 , -1 , -1 , 1;
- C1 << 1 , 0 , 0 , 0 ,
-      -1 , 0 , 0 , 0 ,
-       0 , 1 , 0 , 0 ,
-       0 , -1 , 0 , 0;
- C2 << -1 , 1 , 0 , 0 ,
-        1 , -1 , 0 , 0;
+ A0 << -1 , 0 , 1 , 0 , 0 , -1 , -1 , 1;
+ C1 << 1 , 0 , 0 , 0 , -1 , 0 , 0 , 0 , 0 , 1 , 0 , 0 , 0 , -1 , 0 , 0;
+ C2 << -1 , 1 , 0 , 0 , 1 , -1 , 0 , 0;
  A3 << 0 , 0 , 0 , 1;
  A4 << 0 , 0 , 1 , 0;
  D.A = { A0 , Mat( 0 , 4 ) , Mat( 0 , 4 ) , A3 , A4 };
@@ -1635,8 +1630,7 @@ static Data initial_state_data( void )
  Mat A0( 1 , 3 ) , A1( 1 , 3 ) , C2( 2 , 3 ) , A3( 1 , 3 );
  A0 << -1 , -1 , 1;
  A1 << 1 , 0 , 0;
- C2 << 0 , 1 , 0 ,
-       0 , -1 , 0;
+ C2 << 0 , 1 , 0 , 0 , -1 , 0;
  A3 << 0 , 0 , 1;
  D.A = { A0 , A1 , Mat( 0 , 3 ) , A3 };
  D.b = { { 0 } , { 3 } , {} , { 0 } };
@@ -1654,21 +1648,22 @@ static Data initial_state_data( void )
 // Solvers are registered to the HQPBlock, so that they see its
 // Modification, and kept from a run to the next one
 
-struct Cascade {
+struct Cascade
+{
  HQPBlock & block;
  std::vector< HQPStageSolver * > s;
- long iter = 0;     // the iterations of the last run()
- int status = 0;    // the first status not kOK, kOK if none
+ long iter = 0;   // the iterations of the last run()
+ int status = 0;  // the first status not kOK, kOK if none
 
- explicit Cascade( HQPBlock & b ) : block( b ) {}
+ explicit Cascade( HQPBlock & b ) : block( b ) { }
 
  ~Cascade() { block.unregister_Solvers( true ); }
 
  HQPStageSolver * solver( Index p ) {
   while( s.size() <= p ) {
    auto x = dynamic_cast< HQPStageSolver * >(
-                                  Solver::new_Solver( "HQPStageSolver" ) );
-   x->set_Block( & block );
+     Solver::new_Solver( "HQPStageSolver" ) );
+   x->set_Block( &block );
    block.register_Solver( x );
    s.push_back( x );
    }
@@ -1706,14 +1701,14 @@ struct Cascade {
 // the values of the levels are the expected ones, to tol
 
 static bool values_are( const std::vector< double > & val ,
-                        const std::vector< double > & exp , double tol )
+			const std::vector< double > & exp , double tol )
 {
  if( val.size() != exp.size() )
   return( false );
  for( Index p = 0 ; p < val.size() ; ++p )
   if( std::abs( val[ p ] - exp[ p ] ) > tol * std::max( 1.0 , exp[ p ] ) ) {
    std::cout << "  level " << p << " value " << val[ p ] << " instead of "
-             << exp[ p ] << std::endl;
+	     << exp[ p ] << std::endl;
    return( false );
    }
  return( true );
@@ -1757,13 +1752,16 @@ static void test_stage_data( void )
  CHECK( bad( []( Data & D ) { D.st.ineq_stage.assign( 6 , 2 ); } ) );
  CHECK( bad( []( Data & D ) { D.st.dynamics_level = 5; } ) );
  CHECK( bad( []( Data & D ) { D.st.num_stages = 0; } ) );
- CHECK( bad( []( Data & D ) { D.st = HQPBlock::StageData();
-                              D.st.dynamics_level = 1; } ) );
+ CHECK( bad( []( Data & D ) {
+  D.st = HQPBlock::StageData();
+  D.st.dynamics_level = 1;
+  } ) );
  CHECK( ! bad( []( Data & D ) { D.st.eq_stage = { 0 , 1 , 1 , 0 }; } ) );
 
  // the netCDF format: what is written, and the round trip
- const auto file = ( std::filesystem::temp_directory_path() /
-                     "HQPBlock_unit_test_stages.nc4" ).string();
+ const auto file =
+   ( std::filesystem::temp_directory_path() / "HQPBlock_unit_test_stages.nc4" )
+     .string();
  for( int given = 0 ; given < 2 ; ++given ) {
   Data D = integrator_data();
   if( given ) {
@@ -1828,9 +1826,9 @@ static void test_stage_data( void )
  block.print( s0 );
  block.print( s1 , 1 );
  CHECK( s0.str().find( " 2 stages, the dynamics at level 0\n" ) !=
-        std::string::npos );
+	std::string::npos );
  CHECK( s1.str().find( "  stage of each column (s state, u input): u0 u1 "
-                       "s1 s2\n" ) != std::string::npos );
+		       "s1 s2\n" ) != std::string::npos );
 
  std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
  }
@@ -1843,8 +1841,12 @@ using EVec = Eigen::VectorXd;
 using EQP = HQPStageSolver::StageEQP;
 
 // the kinds of dependent rows of a random StageEQP
-enum Dependent { kNone = 0 , kInStage = 1 , kThroughDynamics = 2 ,
-                 kInconsistent = 4 };
+enum Dependent {
+ kNone = 0 ,
+ kInStage = 1 ,
+ kThroughDynamics = 2 ,
+ kInconsistent = 4
+ };
 
 /*--------------------------------------------------------------------------*/
 // a random StageEQP with nx[ k ] states and nu[ k ] inputs at stage k,
@@ -1855,9 +1857,9 @@ enum Dependent { kNone = 0 , kInStage = 1 , kThroughDynamics = 2 ,
 // they fix do not make the closed loop unstable
 
 static EQP random_eqp( unsigned seed , const std::vector< Index > & nx ,
-                       const std::vector< Index > & nu ,
-                       const std::vector< Index > & mrow , Index ntask ,
-                       double eps , int dep , double gs = 1 )
+		       const std::vector< Index > & nu ,
+		       const std::vector< Index > & mrow , Index ntask ,
+		       double eps , int dep , double gs = 1 )
 {
  std::mt19937 g( seed );
  std::normal_distribution< double > nd( 0 , 1 );
@@ -1875,8 +1877,9 @@ static EQP random_eqp( unsigned seed , const std::vector< Index > & nx ,
  std::vector< EVec > xb( N + 1 ) , ub( N );
  xb[ 0 ] = rnd( nx[ 0 ] , 1 );
  for( Index k = 0 ; k < N ; ++k ) {
-  e.A[ k ] = Mat::Identity( nx[ k + 1 ] , nx[ k ] ) +
-             0.05 * rnd( nx[ k + 1 ] , nx[ k ] );
+  e.A[ k ] =
+    Mat::Identity( nx[ k + 1 ] , nx[ k ] ) + 0.05 * rnd( nx[ k + 1 ] ,
+							 nx[ k ] );
   e.B[ k ] = rnd( nx[ k + 1 ] , nu[ k ] );
   e.c[ k ] = 0.1 * rnd( nx[ k + 1 ] , 1 );
   ub[ k ] = rnd( nu[ k ] , 1 );
@@ -1886,9 +1889,9 @@ static EQP random_eqp( unsigned seed , const std::vector< Index > & nx ,
   const Index m = ( k < N ) ? nu[ k ] : 0;
   const Mat T = rnd( ntask , nx[ k ] + m );
   const EVec t = rnd( ntask , 1 );
-  const Mat Hs = T.transpose() * T +
-                 eps * Mat::Identity( nx[ k ] + m , nx[ k ] + m );
-  const EVec hs = - T.transpose() * t;
+  const Mat Hs =
+    T.transpose() * T + eps * Mat::Identity( nx[ k ] + m , nx[ k ] + m );
+  const EVec hs = -T.transpose() * t;
   e.Q[ k ] = Hs.topLeftCorner( nx[ k ] , nx[ k ] );
   e.q[ k ] = hs.head( nx[ k ] );
   if( k < N ) {
@@ -1927,7 +1930,7 @@ static EQP random_eqp( unsigned seed , const std::vector< Index > & nx ,
     };
    add( k + 1 , a , Mat::Zero( 1 , nu[ k + 1 ] ) , ( a * xb[ k + 1 ] )( 0 ) );
    add( k , a * e.A[ k ] , a * e.B[ k ] ,
-        ( a * ( xb[ k + 1 ] - e.c[ k ] ) )( 0 ) );
+	( a * ( xb[ k + 1 ] - e.c[ k ] ) )( 0 ) );
    }
  if( dep & kInconsistent )
   for( Index k = 0 ; k <= N ; ++k )
@@ -1946,7 +1949,7 @@ static EQP random_eqp( unsigned seed , const std::vector< Index > & nx ,
 // returns the trajectory
 
 static void dense_kkt( const EQP & e , std::vector< EVec > & x ,
-                       std::vector< EVec > & u )
+		       std::vector< EVec > & u )
 {
  const Index N = e.num_stages();
  std::vector< Index > xi( N + 1 ) , ui( N );
@@ -1967,7 +1970,7 @@ static void dense_kkt( const EQP & e , std::vector< EVec > & x ,
  for( Index k = 0 ; k <= N ; ++k ) {
   const Index nx = e.Q[ k ].rows();
   K.block( xi[ k ] , xi[ k ] , nx , nx ) = e.Q[ k ];
-  rhs.segment( xi[ k ] , nx ) = - e.q[ k ];
+  rhs.segment( xi[ k ] , nx ) = -e.q[ k ];
   auto put = [ & ]( Index r , Index c , const Mat & M ) {
    K.block( r , c , M.rows() , M.cols() ) = M;
    K.block( c , r , M.cols() , M.rows() ) = M.transpose();
@@ -1977,12 +1980,12 @@ static void dense_kkt( const EQP & e , std::vector< EVec > & x ,
    K.block( ui[ k ] , ui[ k ] , n_u , n_u ) = e.R[ k ];
    K.block( ui[ k ] , xi[ k ] , n_u , nx ) = e.S[ k ];
    K.block( xi[ k ] , ui[ k ] , nx , n_u ) = e.S[ k ].transpose();
-   rhs.segment( ui[ k ] , n_u ) = - e.r[ k ];
+   rhs.segment( ui[ k ] , n_u ) = -e.r[ k ];
    const Index nd = e.A[ k ].rows();
-   put( row , xi[ k + 1 ] , - Mat::Identity( nd , nd ) );
+   put( row , xi[ k + 1 ] , -Mat::Identity( nd , nd ) );
    put( row , xi[ k ] , e.A[ k ] );
    put( row , ui[ k ] , e.B[ k ] );
-   rhs.segment( row , nd ) = - e.c[ k ];
+   rhs.segment( row , nd ) = -e.c[ k ];
    row += nd;
    }
   const Index mg = e.G[ k ].rows();
@@ -1994,8 +1997,8 @@ static void dense_kkt( const EQP & e , std::vector< EVec > & x ,
    row += mg;
    }
   }
- const EVec sol = Eigen::CompleteOrthogonalDecomposition< Mat >( K )
-                  .solve( rhs );
+ const EVec sol =
+   Eigen::CompleteOrthogonalDecomposition< Mat >( K ).solve( rhs );
  x.assign( N + 1 , EVec() );
  u.assign( N , EVec() );
  for( Index k = 0 ; k <= N ; ++k ) {
@@ -2009,7 +2012,7 @@ static void dense_kkt( const EQP & e , std::vector< EVec > & x ,
 // the objective of e at a trajectory
 
 static double eqp_value( const EQP & e , const std::vector< EVec > & x ,
-                         const std::vector< EVec > & u )
+			 const std::vector< EVec > & u )
 {
  const Index N = e.num_stages();
  double v = 0;
@@ -2017,7 +2020,7 @@ static double eqp_value( const EQP & e , const std::vector< EVec > & x ,
   v += 0.5 * x[ k ].dot( e.Q[ k ] * x[ k ] ) + e.q[ k ].dot( x[ k ] );
   if( k < N )
    v += u[ k ].dot( e.S[ k ] * x[ k ] ) +
-        0.5 * u[ k ].dot( e.R[ k ] * u[ k ] ) + e.r[ k ].dot( u[ k ] );
+	0.5 * u[ k ].dot( e.R[ k ] * u[ k ] ) + e.r[ k ].dot( u[ k ] );
   }
  return( v );
  }
@@ -2033,8 +2036,10 @@ static double eqp_residual( const EQP & e )
   EVec g = e.G[ k ] * e.x[ k ] - e.g[ k ];
   if( k < N ) {
    g += e.H[ k ] * e.u[ k ];
-   r = std::max( r , ( e.A[ k ] * e.x[ k ] + e.B[ k ] * e.u[ k ] + e.c[ k ] -
-                       e.x[ k + 1 ] ).lpNorm< Eigen::Infinity >() );
+   r = std::max(
+     r ,
+       ( e.A[ k ] * e.x[ k ] + e.B[ k ] * e.u[ k ] + e.c[ k ] - e.x[ k + 1 ] )
+	  .lpNorm< Eigen::Infinity >() );
    }
   if( g.size() )
    r = std::max( r , g.lpNorm< Eigen::Infinity >() );
@@ -2054,12 +2059,12 @@ static double eqp_stationarity( const EQP & e )
  double r = 0;
  for( Index k = N ; k-- > 0 ; ) {
   const EVec gu = e.R[ k ] * e.u[ k ] + e.S[ k ] * e.x[ k ] + e.r[ k ] +
-                  e.B[ k ].transpose() * lam +
-                  e.H[ k ].transpose() * e.mu[ k ];
+		  e.B[ k ].transpose() * lam +
+		  e.H[ k ].transpose() * e.mu[ k ];
   if( gu.size() )
    r = std::max( r , gu.lpNorm< Eigen::Infinity >() );
   lam = e.Q[ k ] * e.x[ k ] + e.S[ k ].transpose() * e.u[ k ] + e.q[ k ] +
-        e.A[ k ].transpose() * lam + e.G[ k ].transpose() * e.mu[ k ];
+	e.A[ k ].transpose() * lam + e.G[ k ].transpose() * e.mu[ k ];
   }
  if( lam.size() )
   r = std::max( r , lam.lpNorm< Eigen::Infinity >() );
@@ -2073,11 +2078,11 @@ static double eqp_stationarity( const EQP & e )
 // be reported
 
 static void eqp_case( const std::string & name , unsigned seed ,
-                      const std::vector< Index > & nx ,
-                      const std::vector< Index > & nu ,
-                      const std::vector< Index > & mrow , Index ntask ,
-                      double eps , int dep , double xtol = 1e-7 ,
-                      double gs = 1 )
+		      const std::vector< Index > & nx ,
+		      const std::vector< Index > & nu ,
+		      const std::vector< Index > & mrow , Index ntask ,
+		      double eps , int dep , double xtol = 1e-7 ,
+		      double gs = 1 )
 {
  const int e0 = errors;
  EQP e = random_eqp( seed , nx , nu , mrow , ntask , eps , dep , gs );
@@ -2085,7 +2090,7 @@ static void eqp_case( const std::string & name , unsigned seed ,
  if( dep & kInconsistent ) {
   CHECK( incons > 1e-5 );
   std::cout << " recursion, " << name << ": inconsistency " << incons
-            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+	    << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
   return;
   }
 
@@ -2111,20 +2116,19 @@ static void eqp_case( const std::string & name , unsigned seed ,
  CHECK( sta <= xtol * sc );
  if( dep & ( kInStage | kThroughDynamics ) )
   CHECK( e.dropped > 0 );
- std::cout << " recursion, " << name << ": |x - KKT| " << dx
-           << ", objective " << fr << " vs " << fk << ", rows " << res
-           << ", stationarity " << sta << ", dropped " << e.dropped
-           << ", to go " << e.to_go << ( errors == e0 ? " -> OK" : " -> KO" )
-           << std::endl;
+ std::cout << " recursion, " << name << ": |x - KKT| " << dx << ", objective "
+	   << fr << " vs " << fk << ", rows " << res << ", stationarity "
+	   << sta << ", dropped " << e.dropped << ", to go " << e.to_go
+	   << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
  }
 
 /*--------------------------------------------------------------------------*/
 
 static void test_recursion( void )
 {
- std::cout << "the Riccati recursion of HQPStageSolver::StageEQP"
-           << std::endl;
- auto rep = []( Index n , Index v ) { return( std::vector< Index >( n , v ) );
+ std::cout << "the Riccati recursion of HQPStageSolver::StageEQP" << std::endl;
+ auto rep = []( Index n , Index v ) {
+  return( std::vector< Index >( n , v ) );
   };
 
  // the size of one robot of the radial scenario, 0 to 2 rows per stage
@@ -2132,41 +2136,42 @@ static void test_recursion( void )
  for( Index k = 0 ; k <= 10 ; ++k )
   m10[ k ] = k % 3;
  eqp_case( "one robot" , 1 , rep( 11 , 4 ) , rep( 10 , 2 ) , m10 , 2 , 1e-6 ,
-           kNone );
+	   kNone );
 
  // more rows than inputs: constraints-to-go at every stage
  eqp_case( "more rows than inputs" , 2 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
-           { 3 , 0 , 3 , 1 , 3 , 0 , 3 , 0 , 1 } , 2 , 1e-6 , kNone );
+	   { 3 , 0 , 3 , 1 , 3 , 0 , 3 , 0 , 1 } , 2 , 1e-6 , kNone );
 
  // as many rows as inputs: no freedom left in u
  eqp_case( "inputs fixed by the rows" , 3 , rep( 7 , 3 ) , rep( 6 , 2 ) ,
-           { 2 , 2 , 2 , 2 , 2 , 2 , 0 } , 1 , 1e-6 , kNone , 1e-7 , 0.1 );
+	   { 2 , 2 , 2 , 2 , 2 , 2 , 0 } , 1 , 1e-6 , kNone , 1e-7 , 0.1 );
 
  // dependent rows in a stage, and through the dynamics
  eqp_case( "dependent rows in a stage" , 4 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
-           { 2 , 3 , 0 , 2 , 2 , 3 , 0 , 2 , 0 } , 2 , 1e-6 , kInStage );
- eqp_case( "rows dependent through the dynamics" , 5 , rep( 9 , 4 ) ,
-           rep( 8 , 2 ) , { 1 , 0 , 1 , 0 , 1 , 0 , 1 , 0 , 0 } , 2 , 1e-6 ,
-           kThroughDynamics );
- eqp_case( "both" , 6 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
-           { 2 , 2 , 2 , 2 , 2 , 2 , 2 , 2 , 0 } , 2 , 1e-6 ,
-           kInStage | kThroughDynamics );
+	   { 2 , 3 , 0 , 2 , 2 , 3 , 0 , 2 , 0 } , 2 , 1e-6 , kInStage );
+ eqp_case( "rows dependent through the dynamics" , 5 , rep( 9 , 4 ) , rep( 8 ,
+									   2 ) ,
+	   { 1 , 0 , 1 , 0 , 1 , 0 , 1 , 0 , 0 } , 2 , 1e-6 ,
+      kThroughDynamics );
+ eqp_case( "both" , 6 , rep( 9 , 4 ) , rep( 8 , 2 ) , { 2 , 2 , 2 , 2 , 2 , 2 ,
+	   2 , 2 , 0 } ,
+	   2 , 1e-6 , kInStage | kThroughDynamics );
 
  // rows on x_N, a free x_0 constrained by the rows of stage 0
  eqp_case( "rows on x_0 and x_N" , 7 , rep( 6 , 3 ) , rep( 5 , 1 ) ,
-           { 2 , 1 , 0 , 1 , 0 , 2 } , 1 , 1e-6 , kNone );
+	   { 2 , 1 , 0 , 1 , 0 , 2 } , 1 , 1e-6 , kNone );
 
  // x_0 of size 0, as with no initial state among the columns, and sizes
  // that change along the stages
- eqp_case( "x_0 of size 0" , 8 , { 0 , 2 , 3 , 3 , 4 , 2 } ,
-           { 2 , 1 , 2 , 3 , 1 } , { 1 , 0 , 2 , 1 , 3 , 1 } , 1 , 1e-6 ,
-           kNone );
+ eqp_case( "x_0 of size 0" , 8 , { 0 , 2 , 3 , 3 , 4 , 2 } , { 2 , 1 , 2 , 3 ,
+	   1 } ,
+	   { 1 , 0 , 2 , 1 , 3 , 1 } , 1 , 1e-6 , kNone );
 
  // a single stage, and stages with no input
  eqp_case( "one stage" , 9 , { 3 , 3 } , { 2 } , { 1 , 1 } , 2 , 1e-6 ,
-           kNone );
+	   kNone );
  eqp_case( "stages with no input" , 10 , rep( 5 , 2 ) , { 1 , 0 , 2 , 0 } ,
-           { 1 , 1 , 0 , 1 , 0 } , 2 , 1e-6 , kNone );
+	   { 1 , 1 , 0 , 1 , 0 } , 2 , 1e-6 , kNone );
 
  // the size of the 8 robots of the radial scenario
  std::vector< Index > m8( 11 );
@@ -2174,17 +2179,19 @@ static void test_recursion( void )
   m8[ k ] = ( 5 * k ) % 17;
  m8[ 10 ] = 3;
  eqp_case( "eight robots" , 11 , rep( 11 , 32 ) , rep( 10 , 16 ) , m8 , 16 ,
-           1e-6 , kNone , 1e-3 );
+	   1e-6 ,
+	   kNone , 1e-3 );
 
  // a dependent row that is not consistent
  eqp_case( "an inconsistent row" , 12 , rep( 5 , 3 ) , rep( 4 , 2 ) ,
-           { 2 , 2 , 2 , 2 , 0 } , 1 , 1e-6 , kInStage | kInconsistent );
+	   { 2 , 2 , 2 , 2 , 0 } , 1 , 1e-6 , kInStage | kInconsistent );
 
  // no regularization and one task row: Z singular, the minimum-norm step
  {
   const int e0 = errors;
-  EQP e = random_eqp( 13 , rep( 5 , 3 ) , rep( 4 , 3 ) , { 1 , 0 , 1 , 0 , 0 }
-                      , 1 , 0 , kNone );
+  EQP e =
+    random_eqp( 13 , rep( 5 , 3 ) , rep( 4 , 3 ) , { 1 , 0 , 1 , 0 , 0 } , 1 ,
+		0 , kNone );
   e.solve( 0 );
   std::vector< EVec > xk , uk;
   dense_kkt( e , xk , uk );
@@ -2192,7 +2199,7 @@ static void test_recursion( void )
   CHECK( eqp_residual( e ) <= 1e-8 );
   CHECK( fr <= fk + 1e-8 * std::max( 1.0 , std::abs( fk ) ) );
   std::cout << " recursion, no regularization: objective " << fr << " vs "
-            << fk << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+	    << fk << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
   }
  }
 
@@ -2222,11 +2229,13 @@ static void test_stage_solver( void )
   Vec x;
   block.get_x_values( x );
   CHECK( std::abs( x[ 0 ] - 1 ) + std::abs( x[ 1 ] - 1 ) +
-         std::abs( x[ 2 ] - 1 ) + std::abs( x[ 3 ] - 2 ) < 1e-6 );
-  std::cout << " the integrator" << ( given ? ", stages of the rows given"
-                                            : "" ) << ": values 0, 0, 0, "
-            << "9/2, 1/2 in " << cs.iter << " iterations"
-            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+	   std::abs( x[ 2 ] - 1 ) + std::abs( x[ 3 ] - 2 ) <
+	 1e-6 );
+  std::cout << " the integrator"
+	    << ( given ? ", stages of the rows given" : "" )
+	    << ": values 0, 0, 0, "
+	    << "9/2, 1/2 in " << cs.iter << " iterations"
+	    << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
   }
 
  // the initial state among the columns: x_0 is chosen too
@@ -2239,7 +2248,7 @@ static void test_stage_solver( void )
   CHECK( cs.status == Solver::kOK );
   CHECK( values_are( val , { 0 , 0 , 0 , 2 } , 1e-7 ) );
   std::cout << " the initial state as a column: values 0, 0, 0, 2"
-            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+	    << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
   }
 
  // dependent rows: two equal rows of the goal asking for 5 and 7 (their
@@ -2249,10 +2258,8 @@ static void test_stage_solver( void )
   const int e0 = errors;
   Data D = integrator_data();
   Mat A3( 2 , 4 ) , A4( 2 , 4 );
-  A3 << 0 , 0 , 0 , 1 ,
-        0 , 0 , 0 , 1;
-  A4 << 0 , 0 , 1 , 0 ,
-        0 , 0 , 0 , 1;
+  A3 << 0 , 0 , 0 , 1 , 0 , 0 , 0 , 1;
+  A4 << 0 , 0 , 1 , 0 , 0 , 0 , 0 , 1;
   D.A[ 3 ] = A3;
   D.b[ 3 ] = { 5 , 7 };
   D.A[ 4 ] = A4;
@@ -2264,7 +2271,7 @@ static void test_stage_solver( void )
   CHECK( cs.status == Solver::kOK );
   CHECK( values_are( val , { 0 , 0 , 0 , 17 , 5 } , 1e-7 ) );
   std::cout << " dependent rows: values 0, 0, 0, 17, 5"
-            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+	    << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
   }
 
  // a step of Model Predictive Control: the goal moves (set_b(), the
@@ -2290,8 +2297,7 @@ static void test_stage_solver( void )
     }
    else {
     Mat A0( 2 , 4 );
-    A0 << -0.5 , 0 , 1 , 0 ,
-           0 , -0.5 , -1 , 1;
+    A0 << -0.5 , 0 , 1 , 0 , 0 , -0.5 , -1 , 1;
     warm.set_A( 0 , sparse( A0 ) );
     cold.set_A( 0 , sparse( A0 ) );
     }
@@ -2304,8 +2310,7 @@ static void test_stage_solver( void )
    Data F = D;
    F.b[ 3 ] = { 1.5 };
    if( k ) {
-    F.A[ 0 ] << -0.5 , 0 , 1 , 0 ,
-                 0 , -0.5 , -1 , 1;
+    F.A[ 0 ] << -0.5 , 0 , 1 , 0 , 0 , -0.5 , -1 , 1;
     }
    load( fresh , F );
    Cascade cf( fresh );
@@ -2315,9 +2320,9 @@ static void test_stage_solver( void )
    CHECK( values_are( vc , vf , 1e-9 ) );
    }
   CHECK( iw <= ic );
-  std::cout << " two steps of Model Predictive Control: iterations warm "
-            << iw << ", cold " << ic << ( errors == e0 ? " -> OK" : " -> KO" )
-            << std::endl;
+  std::cout << " two steps of Model Predictive Control: iterations warm " << iw
+	    << ", cold " << ic << ( errors == e0 ? " -> OK" : " -> KO" )
+	    << std::endl;
   }
 
  // what does not fit, and the parameters
@@ -2332,8 +2337,8 @@ static void test_stage_solver( void )
     cs.solver( p )->get_var_solution();
     block.next_level();
     }
-   return( throws< std::invalid_argument >( [ & ]() {
-    cs.solver( level )->compute(); } ) );
+   return( throws< std::invalid_argument >(
+     [ & ]() { cs.solver( level )->compute(); } ) );
    };
 
   // no stage structure
@@ -2373,7 +2378,7 @@ static void test_stage_solver( void )
   HQPDistBlock db;
   db.load( b0 , 2 , { 0 , 1 } );
   HQPStageSolver s;
-  s.set_Block( & db );
+  s.set_Block( &db );
   CHECK( throws< std::invalid_argument >( [ & ]() { s.compute(); } ) );
   s.set_Block( nullptr );
 
@@ -2384,10 +2389,10 @@ static void test_stage_solver( void )
   CHECK( s.int_par_str2idx( "intWarmStart" ) == HQPStageSolver::intWarmStart );
   CHECK( s.dbl_par_str2idx( "dblRankTol" ) == HQPStageSolver::dblRankTol );
   CHECK( s.dbl_par_idx2str( HQPStageSolver::dblDualTol ) == "dblDualTol" );
-  CHECK( throws< std::invalid_argument >( [ & ]() {
-   s.set_par( HQPStageSolver::intWarmStart , 2 ); } ) );
-  CHECK( throws< std::invalid_argument >( [ & ]() {
-   s.set_par( HQPStageSolver::dblRankTol , -1.0 ); } ) );
+  CHECK( throws< std::invalid_argument >(
+    [ & ]() { s.set_par( HQPStageSolver::intWarmStart , 2 ); } ) );
+  CHECK( throws< std::invalid_argument >(
+    [ & ]() { s.set_par( HQPStageSolver::dblRankTol , -1.0 ); } ) );
 
   // an iteration limit stops a level before its optimum
   HQPBlock b5;
@@ -2399,7 +2404,7 @@ static void test_stage_solver( void )
   CHECK( c5.status == Solver::kStopIter );
 
   std::cout << " what does not fit, the parameters and the iteration limit"
-            << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+	    << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
   }
  }
 
@@ -2426,8 +2431,9 @@ static void test_file( const std::string & file )
  Mat X( P , n );
  {
   netCDF::NcFile f( file , netCDF::NcFile::read );
-  Eigen::Matrix< double , Eigen::Dynamic , Eigen::Dynamic , Eigen::RowMajor >
-   Xr( P , n );
+  Eigen::Matrix< double , Eigen::Dynamic , Eigen::Dynamic ,
+    Eigen::RowMajor > Xr(
+    P , n );
   f.getGroup( "HQPReference" ).getVar( "X" ).getVar( Xr.data() );
   X = Xr;
   }
@@ -2454,8 +2460,8 @@ static void test_file( const std::string & file )
   for( Index j = 0 ; j < n ; ++j )
    dx = std::max( dx , std::abs( x[ j ] - X( P - 1 , j ) ) );
   std::cout << " " << nm << ": " << P << " levels, " << n << " columns, "
-            << block->get_num_stages() << " stages, " << cs.iter
-            << " iterations, |x - file| " << dx << ", values";
+	    << block->get_num_stages() << " stages, " << cs.iter
+	    << " iterations, |x - file| " << dx << ", values";
   for( Index p = 0 ; p < P ; ++p )
    std::cout << " " << val[ p ] << " (" << ref[ p ] << ")";
   std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
@@ -2473,7 +2479,7 @@ int main( int argc , char ** argv )
   for( int i = 1 ; i < argc ; ++i )
    test_file( argv[ i ] );
   std::cout << ( errors ? "HQPBlock: FAILED" : "HQPBlock: all tests passed" )
-            << std::endl;
+	    << std::endl;
   return( errors ? 1 : 0 );
   }
 

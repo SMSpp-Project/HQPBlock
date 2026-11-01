@@ -310,8 +310,9 @@ class HQPBlock : public HQPLevelBlock
   *   entry on it and on no other component of \f$ s_{k+1} \f$, the others
   *   being on \f$ s_k \f$ and \f$ u_k \f$. */
 
- struct StageData {
-  StageData( void ) : num_stages( 0 ) , dynamics_level( 0 ) {}
+ struct StageData
+ {
+  StageData( void ) : num_stages( 0 ) , dynamics_level( 0 ) { }
   ///< constructor: no stage structure
 
   Index num_stages;                 ///< the number N of stages, 0 for none
@@ -367,12 +368,11 @@ class HQPBlock : public HQPLevelBlock
   * agree. */
 
  void load( Index n , std::vector< SparseMatrix > && A ,
-            std::vector< Vec_double > && b ,
-            std::vector< SparseMatrix > && C ,
-            std::vector< Vec_double > && d ,
-            std::vector< Vec_double > && we = {} ,
-            std::vector< Vec_double > && wi = {} , double eps = 0 ,
-            Vec_double && rw = {} , StageData && stages = {} );
+	    std::vector< Vec_double > && b , std::vector< SparseMatrix > && C ,
+	    std::vector< Vec_double > && d ,
+	    std::vector< Vec_double > && we = {} ,
+	    std::vector< Vec_double > && wi = {} , double eps = 0 ,
+	    Vec_double && rw = {} , StageData && stages = {} );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// extends Block::deserialize( netCDF::NcGroup )
@@ -579,7 +579,7 @@ class HQPBlock : public HQPLevelBlock
   return( v_center );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the factor of the whole Objective [see set_objective_scale()]
 
  [[nodiscard]] double get_objective_scale( void ) const { return( f_scale ); }
@@ -591,35 +591,35 @@ class HQPBlock : public HQPLevelBlock
   return( f_stages.num_stages );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the stage of each column (empty if there is no stage data)
 
  [[nodiscard]] const std::vector< Index > & get_var_stage( void ) const {
   return( f_stages.var_stage );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns 1 for each column that is a state, 0 for an input
 
  [[nodiscard]] const std::vector< Index > & get_var_state( void ) const {
   return( f_stages.var_state );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the stage of each equality row, as get_b() (empty: not given)
 
  [[nodiscard]] const std::vector< Index > & get_eq_stage( void ) const {
   return( f_stages.eq_stage );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the stage of each inequality row, as get_d() (empty: not given)
 
  [[nodiscard]] const std::vector< Index > & get_ineq_stage( void ) const {
   return( f_stages.ineq_stage );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the level whose equality rows are the dynamics
 
  [[nodiscard]] Index get_dynamics_level( void ) const {
@@ -883,12 +883,12 @@ class HQPBlock : public HQPLevelBlock
   * state of level 0; the abstract representation is not generated. */
 
  void guts_of_load( Index n , std::vector< SparseMatrix > && A ,
-                    std::vector< Vec_double > && b ,
-                    std::vector< SparseMatrix > && C ,
-                    std::vector< Vec_double > && d ,
-                    std::vector< Vec_double > && we ,
-                    std::vector< Vec_double > && wi , double eps ,
-                    Vec_double && rw , StageData && stages );
+		    std::vector< Vec_double > && b ,
+		    std::vector< SparseMatrix > && C ,
+		    std::vector< Vec_double > && d ,
+		    std::vector< Vec_double > && we ,
+		    std::vector< Vec_double > && wi , double eps ,
+		    Vec_double && rw , StageData && stages );
 
  /// the constant \f$ \varepsilon \sum_j r_j c_j^2 / 2 \f$ of the Objective
 
@@ -956,7 +956,7 @@ class HQPBlock : public HQPLevelBlock
  Vec_double v_rw;                   ///< weights of the variables in it
  Vec_double v_center;               ///< center of the regularization
 
- StageData f_stages;                ///< the stage structure, if any
+ StageData f_stages;  ///< the stage structure, if any
 
  std::vector< ColVariable > v_x;    ///< the variables x
  std::vector< ColVariable > v_v;    ///< the slacks of the equality rows

@@ -24,7 +24,7 @@
 
 #ifndef __HQPStageSolver
  #define __HQPStageSolver
-                      /* self-identification: #endif at the end of the file */
+/* self-identification: #endif at the end of the file */
 
 /*--------------------------------------------------------------------------*/
 /*------------------------------ INCLUDES ----------------------------------*/
@@ -164,14 +164,13 @@ class HQPStageSolver : public Solver
 /*----------------------- PUBLIC PART OF THE CLASS -------------------------*/
 
  public:
-
 /*---------------------------- PUBLIC TYPES --------------------------------*/
 
  using Index = Block::Index;                ///< the index of Block
  using Vec_double = std::vector< double >;  ///< a vector of double
 
- using Mat = Eigen::MatrixXd;               ///< a dense matrix
- using Vec = Eigen::VectorXd;               ///< a dense vector
+ using Mat = Eigen::MatrixXd;  ///< a dense matrix
+ using Vec = Eigen::VectorXd;  ///< a dense vector
 
  /// public enum for the int parameters of HQPStageSolver
  enum int_par_type_HQPSS {
@@ -273,7 +272,6 @@ class HQPStageSolver : public Solver
  class StageEQP
  {
   public:
-
   /// the number N of stages
   [[nodiscard]] Index num_stages( void ) const { return( A.size() ); }
 
@@ -292,36 +290,36 @@ class HQPStageSolver : public Solver
   double solve( double tol );
 
   std::vector< Mat > A , B , Q , S , R , G , H;  ///< the matrices
-  std::vector< Vec > c , q , r , g;              ///< the vectors
+  std::vector< Vec > c , q , r , g;           ///< the vectors
 
-  std::vector< Vec > x , u , mu;   ///< the solution and the multipliers
+  std::vector< Vec > x , u , mu;  ///< the solution and the multipliers
 
-  Index dropped = 0;   ///< the dependent rows dropped by the last solve()
-  Index to_go = 0;     ///< the rows of the constraints-to-go in it
+  Index dropped = 0;  ///< the dependent rows dropped by the last solve()
+  Index to_go = 0;    ///< the rows of the constraints-to-go in it
 
   protected:
-
   /// what the recursion keeps of each stage for the forward sweep
-  struct Stage {
-   Mat K;          ///< the feedback
-   Vec k;          ///< the feedforward
+  struct Stage
+  {
+   Mat K;         ///< the feedback
+   Vec k;         ///< the feedforward
    Mat Quu , Qux;  ///< the Hessian blocks of the stage
-   Vec qu;         ///< the gradient block in u
+   Vec qu;        ///< the gradient block in u
    Mat U , V;      ///< the decomposition of C_u
-   Vec sigma;      ///< its non-zero singular values
-   Mat T;          ///< the independent rows of U_2^T C_x
-   Index m = 0;    ///< the number of rows of the stage
+   Vec sigma;     ///< its non-zero singular values
+   Mat T;         ///< the independent rows of U_2^T C_x
+   Index m = 0;   ///< the number of rows of the stage
    };
 
-  std::vector< Stage > v_st;   ///< one for each stage, N + 1 for x_0
- };
+  std::vector< Stage > v_st;  ///< one for each stage, N + 1 for x_0
+  };
 
 /*---------------------- CONSTRUCTOR AND DESTRUCTOR ------------------------*/
  /// constructor: the HQPStageSolver has no Block
 
- HQPStageSolver( void ) : Solver() {}
+ HQPStageSolver( void ) : Solver() { }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// destructor: it does nothing
 
  ~HQPStageSolver() override = default;
@@ -333,7 +331,7 @@ class HQPStageSolver : public Solver
 
  void set_Block( Block * block ) override;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// sets the int parameters of HQPStageSolver
  /** Sets the int parameters specific of HQPStageSolver:
   *
@@ -352,7 +350,7 @@ class HQPStageSolver : public Solver
 
  void set_par( idx_type par , int value ) override;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// sets the double parameters of HQPStageSolver
  /** Sets the double parameters specific of HQPStageSolver:
   *
@@ -373,7 +371,7 @@ class HQPStageSolver : public Solver
 
  void set_par( idx_type par , double value ) override;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// receives a Modification of the HQPBlock
  /** Records whether the Modification changes the coefficients of some row
   * (a FunctionMod or a FunctionModVars, also inside a GroupModification),
@@ -414,15 +412,15 @@ class HQPStageSolver : public Solver
  /// returns get_var_value() if kOK, - infinity otherwise
 
  [[nodiscard]] OFValue get_lb( void ) override {
-  return( f_status == kOK ? get_var_value() : - Inf< OFValue >() );
+  return( f_status == kOK ? get_var_value() : -Inf< OFValue >() );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns true if the last compute() found a solution
 
  [[nodiscard]] bool has_var_solution( void ) override { return( f_has_sol ); }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// writes the solution into the HQPBlock
  /** Writes into the ColVariable of the HQPBlock the \f$ x \f$ of the last
   * solution and the slacks of its level at it, \f$ v_p = W^e_p ( A_p x -
@@ -430,31 +428,31 @@ class HQPStageSolver : public Solver
 
  void get_var_solution( Configuration * solc = nullptr ) override;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number of subproblems solved by the last compute()
 
  [[nodiscard]] long get_elapsed_iterations( void ) const override {
   return( f_iter );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the size of the working set at the end of the last compute()
 
  [[nodiscard]] Index get_num_working( void ) const { return( v_W.size() ); }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number of violated tasks of the level at the solution
 
  [[nodiscard]] Index get_num_violated( void ) const { return( v_V.size() ); }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the largest inconsistency of the rows in the last compute()
  /** Returns the largest inconsistency of the rows [see StageEQP::solve()]
   * among the subproblems solved by the last compute(). */
 
  [[nodiscard]] double get_inconsistency( void ) const { return( f_incons ); }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns true if the last compute() started from the previous one
  /** Returns true if the last compute() started from the solution of the
   * subproblem of the working set of the previous one [see intWarmStart]. */
@@ -474,7 +472,7 @@ class HQPStageSolver : public Solver
   return( idx_type( dblLastHQPSSPar ) );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
  /// returns the default value of the int parameter par [see set_par()]
 
@@ -496,7 +494,7 @@ class HQPStageSolver : public Solver
   return( Solver::get_dflt_dbl_par( par ) );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
  /// returns the current value of the int parameter par
 
@@ -522,12 +520,12 @@ class HQPStageSolver : public Solver
   return( Solver::get_dbl_par( par ) );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
  /// returns the index of the int parameter with the given name
 
- [[nodiscard]] idx_type int_par_str2idx( const std::string & name )
-  const override {
+ [[nodiscard]] idx_type
+ int_par_str2idx( const std::string & name ) const override {
   if( name == "intWarmStart" )
    return( intWarmStart );
   return( Solver::int_par_str2idx( name ) );
@@ -535,8 +533,8 @@ class HQPStageSolver : public Solver
 
  /// returns the index of the double parameter with the given name
 
- [[nodiscard]] idx_type dbl_par_str2idx( const std::string & name )
-  const override {
+ [[nodiscard]] idx_type
+ dbl_par_str2idx( const std::string & name ) const override {
   if( name == "dblRankTol" )
    return( dblRankTol );
   if( name == "dblFeasTol" )
@@ -546,12 +544,12 @@ class HQPStageSolver : public Solver
   return( Solver::dbl_par_str2idx( name ) );
   }
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
  /// returns the name of the int parameter with the given index
 
- [[nodiscard]] const std::string & int_par_idx2str( idx_type idx )
-  const override {
+ [[nodiscard]] const std::string &
+ int_par_idx2str( idx_type idx ) const override {
   static const std::string par = "intWarmStart";
   if( idx == intWarmStart )
    return( par );
@@ -560,10 +558,10 @@ class HQPStageSolver : public Solver
 
  /// returns the name of the double parameter with the given index
 
- [[nodiscard]] const std::string & dbl_par_idx2str( idx_type idx )
-  const override {
+ [[nodiscard]] const std::string &
+ dbl_par_idx2str( idx_type idx ) const override {
   static const std::string pars[] = { "dblRankTol" , "dblFeasTol" ,
-                                      "dblDualTol" };
+				      "dblDualTol" };
   if( ( idx >= dblRankTol ) && ( idx < dblLastHQPSSPar ) )
    return( pars[ idx - dblRankTol ] );
   return( Solver::dbl_par_idx2str( idx ) );
@@ -572,7 +570,6 @@ class HQPStageSolver : public Solver
 /*-------------------- PROTECTED PART OF THE CLASS -------------------------*/
 
  protected:
-
 /*--------------------------- PROTECTED TYPES ------------------------------*/
 
  /// a row of the HQPBlock written on its stage
@@ -581,10 +578,11 @@ class HQPStageSolver : public Solver
   * \f$ being its coefficients on \f$ s_{k+1} \f$, so that only \f$ c_k \f$
   * changes with the right-hand sides of the dynamics. */
 
- struct StageRow {
-  Index stage = 0;     ///< the stage k of the row
-  bool empty = true;   ///< the row has no entries
-  bool fits = true;    ///< false if the row has entries out of its stage
+ struct StageRow
+ {
+  Index stage = 0;           ///< the stage k of the row
+  bool empty = true;         ///< the row has no entries
+  bool fits = true;          ///< false if the row has entries out of its stage
   Eigen::RowVectorXd delta;  ///< the coefficients on x_k
   Eigen::RowVectorXd eta;    ///< the coefficients on u_k
   Eigen::RowVectorXd alpha;  ///< the coefficients on s_{k+1}
@@ -601,20 +599,20 @@ class HQPStageSolver : public Solver
 
  void build_stages( const HQPBlock & hb );
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// writes the row h of the matrix M on the stages
  /** Writes the row h of M (a row of the HQPBlock whose stage, if given, is
   * given_stage, otherwise the size of the stage structure) on its stage. */
 
  StageRow stage_row( const HQPBlock::SparseMatrix & M , Index h ,
-                     Index given_stage ) const;
+		     Index given_stage ) const;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// brings the trajectory of the StageEQP to the vector of the n columns
 
  void to_columns( Vec & z ) const;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// solves the subproblem of the working set and of the violated tasks
  /** Fills the StageEQP with the subproblem of the working set (the rows of
   * v_hard whose flag in work is true, the equality ones always) and of the
@@ -626,37 +624,37 @@ class HQPStageSolver : public Solver
   * 100, up to 1e-6. */
 
  void solve_eqp( const std::vector< char > & work ,
-                 const std::vector< char > & viol , Vec & zbar );
+		 const std::vector< char > & viol , Vec & zbar );
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// the slack \f$ f - a^\top z \f$ of the hard row t at z
 
  [[nodiscard]] double hard_slack( Index t , const Vec & z ) const;
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// the value of the objective of the level at z, without the constant
 
  [[nodiscard]] double level_objective( const Vec & z ) const;
 
 /*--------------------------- PROTECTED FIELDS -----------------------------*/
 
- int f_warm_start = 1;        ///< intWarmStart
- int f_max_iter = 10000;      ///< intMaxIter
- int f_verb = 0;              ///< intLogVerb
- double f_rank_tol = 0;       ///< dblRankTol
- double f_feas_tol = 1e-9;    ///< dblFeasTol
- double f_dual_tol = 1e-9;    ///< dblDualTol
+ int f_warm_start = 1;      ///< intWarmStart
+ int f_max_iter = 10000;    ///< intMaxIter
+ int f_verb = 0;            ///< intLogVerb
+ double f_rank_tol = 0;     ///< dblRankTol
+ double f_feas_tol = 1e-9;  ///< dblFeasTol
+ double f_dual_tol = 1e-9;  ///< dblDualTol
 
- bool f_rebuild = true;       ///< the stages are to be computed anew
+ bool f_rebuild = true;  ///< the stages are to be computed anew
 
  // the stage structure, computed by build_stages()
- Index f_N = 0;                     ///< the number of stages
- Index f_dyn = 0;                   ///< the level of the dynamics
- std::vector< Index > v_ns;         ///< the size of s_k, k = 0 .. N
- std::vector< Index > v_nu;         ///< the size of u_k, k = 0 .. N - 1
- std::vector< Index > v_pos;        ///< the place of each column in s_k, u_k
- std::vector< Mat > v_A;            ///< the A_k of the dynamics
- std::vector< Mat > v_B;            ///< the B_k of the dynamics
+ Index f_N = 0;               ///< the number of stages
+ Index f_dyn = 0;             ///< the level of the dynamics
+ std::vector< Index > v_ns;   ///< the size of s_k, k = 0 .. N
+ std::vector< Index > v_nu;   ///< the size of u_k, k = 0 .. N - 1
+ std::vector< Index > v_pos;  ///< the place of each column in s_k, u_k
+ std::vector< Mat > v_A;      ///< the A_k of the dynamics
+ std::vector< Mat > v_B;      ///< the B_k of the dynamics
  /// for each component of each s_{k+1}, its row in the level of the dynamics
  std::vector< std::vector< Index > > v_dyn_row;
  /// for each component of each s_{k+1}, its coefficient in that row
@@ -665,49 +663,49 @@ class HQPStageSolver : public Solver
  std::vector< StageRow > v_in_rows;  ///< the inequality rows on the stages
 
  // the data of the current compute()
- const HQPBlock * f_hb = nullptr;   ///< the HQPBlock
- Index f_p = 0;                     ///< its current level
- std::vector< Vec > v_c;            ///< the c_k of the dynamics
+ const HQPBlock * f_hb = nullptr;  ///< the HQPBlock
+ Index f_p = 0;                    ///< its current level
+ std::vector< Vec > v_c;           ///< the c_k of the dynamics
  /// the 1 / ( W^e a ) of each row of the dynamics, a its pivot
  std::vector< Vec > v_dyn_inv;
- std::vector< Mat > v_Bhat;         ///< the B of the augmented dynamics
+ std::vector< Mat > v_Bhat;  ///< the B of the augmented dynamics
 
  /// a row of a level above the current one, as a hard row
- struct HardRow {
-  bool eq;      ///< an equality row (always in the working set)
-  Index q;      ///< its level
-  Index h;      ///< its index among the rows of its kind of its level
-  Index i;      ///< its index among the rows of its kind of all levels
-  double rhs;   ///< its right-hand side, moved by its fixed slack
+ struct HardRow
+ {
+  bool eq;     ///< an equality row (always in the working set)
+  Index q;     ///< its level
+  Index h;     ///< its index among the rows of its kind of its level
+  Index i;     ///< its index among the rows of its kind of all levels
+  double rhs;  ///< its right-hand side, moved by its fixed slack
   };
- std::vector< HardRow > v_hard;     ///< the hard rows
- std::vector< Index > v_task_in;    ///< the inequality tasks of the level
+ std::vector< HardRow > v_hard;   ///< the hard rows
+ std::vector< Index > v_task_in;  ///< the inequality tasks of the level
 
- StageEQP f_eqp;                    ///< the subproblem
+ StageEQP f_eqp;  ///< the subproblem
  /// for each row of each stage of the subproblem, its place in v_hard
  std::vector< std::vector< Index > > v_eqp_rows;
  /// for each row of each stage of the subproblem, the factor it is divided by
  std::vector< Vec_double > v_eqp_scale;
 
  // the results
- int f_status = kUnEval;            ///< the status of the last compute()
- bool f_has_sol = false;            ///< a solution is there
- bool f_warm = false;               ///< the last compute() started warm
- long f_iter = 0;                   ///< the subproblems solved in it
- double f_incons = 0;               ///< the largest inconsistency in it
- double f_value = 0;                ///< the value of the Objective
- Vec f_z;                           ///< the solution
- Index f_sol_level = 0;             ///< the level of the solution
+ int f_status = kUnEval;  ///< the status of the last compute()
+ bool f_has_sol = false;  ///< a solution is there
+ bool f_warm = false;     ///< the last compute() started warm
+ long f_iter = 0;         ///< the subproblems solved in it
+ double f_incons = 0;     ///< the largest inconsistency in it
+ double f_value = 0;      ///< the value of the Objective
+ Vec f_z;                 ///< the solution
+ Index f_sol_level = 0;   ///< the level of the solution
 
  // the working set and the violated tasks, kept from compute() to compute()
  Index f_ws_level = Inf< Index >();  ///< their level
- std::vector< Index > v_W;          ///< the inequality rows in it
- std::vector< Index > v_V;          ///< the violated tasks of the level
+ std::vector< Index > v_W;           ///< the inequality rows in it
+ std::vector< Index > v_V;           ///< the violated tasks of the level
 
 /*--------------------- PRIVATE PART OF THE CLASS --------------------------*/
 
  private:
-
 /*-------------------------- PRIVATE METHODS -------------------------------*/
 
  SMSpp_insert_in_factory_h;  // insert HQPStageSolver in the Solver factory
@@ -720,11 +718,11 @@ class HQPStageSolver : public Solver
 
 /*--------------------------------------------------------------------------*/
 
- }  // end( namespace SMSpp_di_unipi_it )
+}  // end( namespace SMSpp_di_unipi_it )
 
 /*--------------------------------------------------------------------------*/
 
-#endif  /* HQPStageSolver.h included */
+#endif /* HQPStageSolver.h included */
 
 /*--------------------------------------------------------------------------*/
 /*---------------------- End File HQPStageSolver.h -------------------------*/

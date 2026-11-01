@@ -54,7 +54,8 @@ SMSpp_insert_in_factory_cpp_0( HQPStageSolver );
 /*--------------------------- LOCAL FUNCTIONS ------------------------------*/
 /*--------------------------------------------------------------------------*/
 
-namespace {
+namespace
+{
 
 using Index = Block::Index;
 
@@ -62,7 +63,8 @@ using Index = Block::Index;
 // the first rank singular values being those above tol times the largest
 // of the largest one and scale (the size of the matrices M comes from)
 
-struct RankRevealed {
+struct RankRevealed
+{
  Mat U , V;
  Vec s;
  Index rank = 0;
@@ -83,7 +85,7 @@ RankRevealed rank_reveal( const Mat & M , double tol , double scale )
  d.V = svd.matrixV();
  const Vec & s = svd.singularValues();
  const double t = std::max( tol , std::numeric_limits< double >::epsilon() *
-                            double( std::max( m , n ) ) );
+				   double( std::max( m , n ) ) );
  const double ref = t * std::max( s( 0 ) , scale );
  if( s( 0 ) > 0 )
   while( ( d.rank < s.size() ) && ( s( d.rank ) > ref ) )
@@ -122,13 +124,13 @@ double row_dot( const HQPBlock::SparseMatrix & M , Index h , const Vec & z )
 // sigma_i
 
 double piecewise_min( double a , double b , const std::vector< double > & w ,
-                      const std::vector< double > & rho ,
-                      const std::vector< double > & sigma , double T )
+		      const std::vector< double > & rho ,
+		      const std::vector< double > & sigma , double T )
 {
  std::vector< double > bp;
  for( Index i = 0 ; i < rho.size() ; ++i )
   if( sigma[ i ] != 0 ) {
-   const double t = - rho[ i ] / sigma[ i ];
+   const double t = -rho[ i ] / sigma[ i ];
    if( ( t > 0 ) && ( t < T ) )
     bp.push_back( t );
    }
@@ -150,7 +152,7 @@ double piecewise_min( double a , double b , const std::vector< double > & w ,
   if( alpha + beta * tb >= 0 ) {
    if( alpha + beta * ta >= 0 )
     return( ta );
-   return( std::clamp( - alpha / beta , ta , tb ) );
+   return( std::clamp( -alpha / beta , ta , tb ) );
    }
   ta = tb;
   }
@@ -193,8 +195,8 @@ double HQPStageSolver::StageEQP::solve( double tol )
  // one step of the recursion: the stage with the given blocks, the rows
  // C_x x + C_u u = e; P, p, Gam and gam become those of the stage
  auto step = [ & ]( Stage & st , const Mat & Qxx , const Mat & Quu ,
-                    const Mat & Qux , const Vec & qx , const Vec & qu ,
-                    const Mat & Cx , const Mat & Cu , const Vec & e ) {
+		    const Mat & Qux , const Vec & qx , const Vec & qu ,
+		    const Mat & Cx , const Mat & Cu , const Vec & e ) {
   const Index m = Cu.rows() , nu = Cu.cols();
   // the rows that are 0 on u, or 0 altogether, are so relative to the
   // whole of them
@@ -212,7 +214,7 @@ double HQPStageSolver::StageEQP::solve( double tol )
   const Vec sinv = d.s.cwiseInverse();
 
   // u = Kc x + kc + V2 zeta
-  Mat Kc = - V1 * ( sinv.asDiagonal() * ( U1.transpose() * Cx ) );
+  Mat Kc = -V1 * ( sinv.asDiagonal() * ( U1.transpose() * Cx ) );
   Vec kc = V1 * ( sinv.asDiagonal() * ( U1.transpose() * e ) );
 
   // the rows not involving u, reduced to independent ones
@@ -224,8 +226,9 @@ double HQPStageSolver::StageEQP::solve( double tol )
   Gam = st.T * M2;
   gam = st.T * e2;
   if( r2 < m2 )
-   incons = std::max( incons , ( d2.U.rightCols( m2 - r2 ).transpose() *
-                                 e2 ).cwiseAbs().maxCoeff() );
+   incons = std::max(
+     incons ,
+     ( d2.U.rightCols( m2 - r2 ).transpose() * e2 ).cwiseAbs().maxCoeff() );
   dropped += m2 - r2;
   to_go += r2;
 
@@ -263,8 +266,9 @@ double HQPStageSolver::StageEQP::solve( double tol )
  {
   const Index nx = Q[ N ].rows();
   v_st[ N ].m = G[ N ].rows();
-  step( v_st[ N ] , Q[ N ] , Mat( 0 , 0 ) , Mat( 0 , nx ) , q[ N ] ,
-        Vec( 0 ) , G[ N ] , Mat( G[ N ].rows() , 0 ) , g[ N ] );
+  step( v_st[ N ] , Q[ N ] , Mat( 0 , 0 ) , Mat( 0 , nx ) , q[ N ] , Vec( 0 ) ,
+	G[ N ] ,
+	Mat( G[ N ].rows() , 0 ) , g[ N ] );
   }
 
  for( Index k = N ; k-- > 0 ; ) {
@@ -296,19 +300,21 @@ double HQPStageSolver::StageEQP::solve( double tol )
   const Mat P0 = P , G0 = Gam;
   const Vec p0 = p , g0 = gam;
   v_st[ N + 1 ].m = 0;
-  step( v_st[ N + 1 ] , Mat( 0 , 0 ) , P0 , Mat( P0.rows() , 0 ) ,
-        Vec( 0 ) , p0 , Mat( G0.rows() , 0 ) , G0 , g0 );
+  step( v_st[ N + 1 ] , Mat( 0 , 0 ) , P0 , Mat( P0.rows() , 0 ) , Vec( 0 ) ,
+	p0 ,
+	Mat( G0.rows() , 0 ) , G0 , g0 );
   }
 
  // the multipliers pi of the rows C_x x + C_u u = e of a stage
  auto mult = []( const Stage & st , const Vec & xk , const Vec & uk ,
-                 const Vec & nu ) {
+		 const Vec & nu ) {
   const Index rk = st.sigma.size() , m = st.U.rows();
   Vec pi = st.U.rightCols( m - rk ) * ( st.T.transpose() * nu );
   if( rk ) {
    const Vec gu = st.Quu * uk + st.Qux * xk + st.qu;
-   pi -= st.U.leftCols( rk ) * ( ( st.V.leftCols( rk ).transpose() * gu )
-                                 .cwiseQuotient( st.sigma ) );
+   pi -=
+     st.U.leftCols( rk ) *
+     ( ( st.V.leftCols( rk ).transpose() * gu ).cwiseQuotient( st.sigma ) );
    }
   return( pi );
   };
@@ -359,7 +365,7 @@ void HQPStageSolver::set_par( idx_type par , int value )
   case( intWarmStart ):
    if( ( value < 0 ) || ( value > 1 ) )
     throw( std::invalid_argument( "HQPStageSolver::set_par: intWarmStart "
-                                  "is not 0 or 1" ) );
+				  "is not 0 or 1" ) );
    f_warm_start = value;
    break;
   case( intMaxIter ):
@@ -377,14 +383,14 @@ void HQPStageSolver::set_par( idx_type par , int value )
 
 void HQPStageSolver::set_par( idx_type par , double value )
 {
- if( ( par != dblRankTol ) && ( par != dblFeasTol ) && ( par != dblDualTol ) )
- {
+ if( ( par != dblRankTol ) && ( par != dblFeasTol ) &&
+     ( par != dblDualTol ) ) {
   Solver::set_par( par , value );
   return;
   }
  if( ! ( value >= 0 ) )
   throw( std::invalid_argument( "HQPStageSolver::set_par: negative " +
-                                dbl_par_idx2str( par ) ) );
+				dbl_par_idx2str( par ) ) );
  if( par == dblRankTol )
   f_rank_tol = value;
  else
@@ -402,29 +408,28 @@ void HQPStageSolver::add_Modification( sp_Mod & mod )
   return;
 
  std::function< void( const Modification * ) > scan =
-  [ & ]( const Modification * m ) {
-  if( dynamic_cast< const NBModification * >( m ) ) {
-   f_rebuild = true;
-   f_ws_level = Inf< Index >();
-   v_W.clear();
-   v_V.clear();
-   return;
-   }
-  if( auto g = dynamic_cast< const GroupModification * >( m ) ) {
-   for( const auto & s : g->sub_Modifications() )
-    scan( s.get() );
-   return;
-   }
-  // only the coefficients of the rows, not those of the Objective
-  Function * f = nullptr;
-  if( auto fm = dynamic_cast< const FunctionMod * >( m ) )
-   f = fm->function();
-  else
-   if( auto fv = dynamic_cast< const FunctionModVars * >( m ) )
-    f = fv->function();
-  if( dynamic_cast< LinearFunction * >( f ) )
-   f_rebuild = true;
-  };
+   [ & ]( const Modification * m ) {
+    if( dynamic_cast< const NBModification * >( m ) ) {
+     f_rebuild = true;
+     f_ws_level = Inf< Index >();
+     v_W.clear();
+     v_V.clear();
+     return;
+     }
+    if( auto g = dynamic_cast< const GroupModification * >( m ) ) {
+     for( const auto & s : g->sub_Modifications() )
+      scan( s.get() );
+     return;
+     }
+    // only the coefficients of the rows, not those of the Objective
+    Function * f = nullptr;
+    if( auto fm = dynamic_cast< const FunctionMod * >( m ) )
+     f = fm->function();
+    else if( auto fv = dynamic_cast< const FunctionModVars * >( m ) )
+     f = fv->function();
+    if( dynamic_cast< LinearFunction * >( f ) )
+     f_rebuild = true;
+    };
 
  scan( mod.get() );
  }
@@ -448,8 +453,8 @@ void HQPStageSolver::build_stages( const HQPBlock & hb )
   v_pos[ j ] = vt[ j ] ? v_ns[ vs[ j ] ]++ : v_nu[ vs[ j ] ]++;
 
  const std::string where = "HQPStageSolver::compute: ";
- const std::string dl = "the level " + std::to_string( f_dyn ) +
-                        " of the dynamics";
+ const std::string dl =
+   "the level " + std::to_string( f_dyn ) + " of the dynamics";
  if( hb.get_num_ineq_rows( f_dyn ) )
   throw( std::invalid_argument( where + dl + " has inequality rows" ) );
 
@@ -467,8 +472,7 @@ void HQPStageSolver::build_stages( const HQPBlock & hb )
 
  const auto & AD = hb.get_A( f_dyn );
  for( Index h = 0 ; h < Index( AD.rows() ) ; ++h ) {
-  const std::string bad = where + "row " + std::to_string( h ) + " of " +
-                          dl;
+  const std::string bad = where + "row " + std::to_string( h ) + " of " + dl;
   Index top = 0 , cnt = 0 , piv = 0;
   for( HQPBlock::SparseMatrix::InnerIterator it( AD , h ) ; it ; ++it ) {
    const Index j = it.col();
@@ -479,17 +483,16 @@ void HQPStageSolver::build_stages( const HQPBlock & hb )
     cnt = 1;
     piv = j;
     }
-   else
-    if( vs[ j ] == top )
-     ++cnt;
+   else if( vs[ j ] == top )
+    ++cnt;
    }
   if( ( ! top ) || ( cnt != 1 ) )
    throw( std::invalid_argument( bad + " has not one entry on the state of "
-                                 "its stage" ) );
+				       "its stage" ) );
   const Index k = top - 1 , i = v_pos[ piv ];
   if( v_dyn_row[ k ][ i ] != Inf< Index >() )
    throw( std::invalid_argument( bad + " gives a state that another row "
-                                 "gives" ) );
+				       "gives" ) );
   double a = 0;
   for( HQPBlock::SparseMatrix::InnerIterator it( AD , h ) ; it ; ++it )
    if( Index( it.col() ) == piv )
@@ -500,7 +503,7 @@ void HQPStageSolver::build_stages( const HQPBlock & hb )
     continue;
    if( vs[ j ] != k )
     throw( std::invalid_argument( bad + " has an entry out of its "
-                                  "stages" ) );
+					"stages" ) );
    if( vt[ j ] )
     v_A[ k ]( i , v_pos[ j ] ) -= it.value() / a;
    else
@@ -513,8 +516,10 @@ void HQPStageSolver::build_stages( const HQPBlock & hb )
   for( auto r : v_dyn_row[ k ] )
    if( r == Inf< Index >() )
     throw( std::invalid_argument( where + "a state of stage " +
-                                  std::to_string( k + 1 ) + " has no row "
-                                  "in " + dl ) );
+				  std::to_string( k + 1 ) +
+				  " has no row "
+				  "in " +
+				  dl ) );
 
  // the dynamics of the augmented state x_k = ( s_k , u_{k-1} )
  f_eqp.resize( N );
@@ -538,22 +543,20 @@ void HQPStageSolver::build_stages( const HQPBlock & hb )
   if( q != f_dyn )
    for( Index h = 0 ; h < hb.get_num_eq_rows( q ) ; ++h ) {
     const Index i = hb.get_eq_start( q ) + h;
-    v_eq_rows[ i ] = stage_row( hb.get_A( q ) , h ,
-                                es.empty() ? N : es[ i ] );
+    v_eq_rows[ i ] = stage_row( hb.get_A( q ) , h , es.empty() ? N : es[ i ] );
     }
   for( Index h = 0 ; h < hb.get_num_ineq_rows( q ) ; ++h ) {
    const Index i = hb.get_ineq_start( q ) + h;
-   v_in_rows[ i ] = stage_row( hb.get_C( q ) , h ,
-                               is.empty() ? N : is[ i ] );
+   v_in_rows[ i ] = stage_row( hb.get_C( q ) , h , is.empty() ? N : is[ i ] );
    }
   }
  }  // end( HQPStageSolver::build_stages )
 
 /*--------------------------------------------------------------------------*/
 
-HQPStageSolver::StageRow HQPStageSolver::stage_row(
-                         const HQPBlock::SparseMatrix & M , Index h ,
-                         Index given_stage ) const
+HQPStageSolver::StageRow
+HQPStageSolver::stage_row( const HQPBlock::SparseMatrix & M , Index h ,
+			   Index given_stage ) const
 {
  const auto & hb = *f_hb;
  const auto & vs = hb.get_var_stage();
@@ -614,8 +617,8 @@ void HQPStageSolver::to_columns( Vec & z ) const
  const auto & vt = f_hb->get_var_state();
  z.resize( v_pos.size() );
  for( Index j = 0 ; j < v_pos.size() ; ++j )
-  z( j ) = vt[ j ] ? f_eqp.x[ vs[ j ] ]( v_pos[ j ] ) :
-                     f_eqp.u[ vs[ j ] ]( v_pos[ j ] );
+  z( j ) = vt[ j ] ? f_eqp.x[ vs[ j ] ]( v_pos[ j ] )
+		   : f_eqp.u[ vs[ j ] ]( v_pos[ j ] );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -623,8 +626,8 @@ void HQPStageSolver::to_columns( Vec & z ) const
 /*--------------------------------------------------------------------------*/
 
 void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
-                                const std::vector< char > & viol ,
-                                Vec & zbar )
+				const std::vector< char > & viol ,
+				Vec & zbar )
 {
  const auto & hb = *f_hb;
  const Index N = f_N , n = hb.get_num_var();
@@ -648,8 +651,7 @@ void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
    E.B[ k ] = Mat::Zero( v_Bhat[ k ].rows() , nu );
    E.B[ k ].leftCols( v_nu[ k ] ) = v_Bhat[ k ];
    if( nv )
-    E.B[ k ].block( 0 , v_nu[ k ] , nv , nv ) =
-                                             v_dyn_inv[ k ].asDiagonal();
+    E.B[ k ].block( 0 , v_nu[ k ] , nv , nv ) = v_dyn_inv[ k ].asDiagonal();
    }
   }
 
@@ -680,13 +682,13 @@ void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
    return;
   const Index k = sr.stage;
   const double w2 = w * w;
-  const double res = ( sr.alpha.size() ?
-                       sr.alpha.transpose().dot( v_c[ k ] ) : 0.0 ) - rhs;
+  const double res =
+    ( sr.alpha.size() ? sr.alpha.transpose().dot( v_c[ k ] ) : 0.0 ) - rhs;
   E.Q[ k ].noalias() += w2 * sr.delta.transpose() * sr.delta;
   const Index nu = v_nu[ k ];
   E.S[ k ].topRows( nu ).noalias() += w2 * sr.eta.transpose() * sr.delta;
   E.R[ k ].topLeftCorner( nu , nu ).noalias() +=
-                                        w2 * sr.eta.transpose() * sr.eta;
+    w2 * sr.eta.transpose() * sr.eta;
   E.q[ k ] += ( w2 * res ) * sr.delta.transpose();
   E.r[ k ].head( nu ) += ( w2 * res ) * sr.eta.transpose();
   };
@@ -695,7 +697,7 @@ void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
   const Index e0 = hb.get_eq_start( f_p );
   for( Index h = 0 ; h < hb.get_num_eq_rows( f_p ) ; ++h )
    add_cost( v_eq_rows[ e0 + h ] , hb.get_we()[ e0 + h ] ,
-             hb.get_b()[ e0 + h ] );
+	     hb.get_b()[ e0 + h ] );
   for( Index t = 0 ; t < v_task_in.size() ; ++t )
    if( viol[ t ] ) {
     const Index i = v_task_in[ t ];
@@ -709,8 +711,8 @@ void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
  for( Index t = 0 ; t < v_hard.size() ; ++t ) {
   if( ! work[ t ] )
    continue;
-  const auto & sr = v_hard[ t ].eq ? v_eq_rows[ v_hard[ t ].i ] :
-                                      v_in_rows[ v_hard[ t ].i ];
+  const auto & sr =
+    v_hard[ t ].eq ? v_eq_rows[ v_hard[ t ].i ] : v_in_rows[ v_hard[ t ].i ];
   if( ! sr.empty )
    v_eqp_rows[ sr.stage ].push_back( t );
   }
@@ -738,10 +740,12 @@ void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
     E.H[ k ].row( h ).head( v_nu[ k ] ) = sr.eta / sc;
     if( slk )
      E.H[ k ].row( h ).tail( v_ns[ k + 1 ] ) =
-             sr.alpha.cwiseProduct( v_dyn_inv[ k ].transpose() ) / sc;
+       sr.alpha.cwiseProduct( v_dyn_inv[ k ].transpose() ) / sc;
     }
-   E.g[ k ]( h ) = ( hr.rhs - ( sr.alpha.size() ?
-                     sr.alpha.transpose().dot( v_c[ k ] ) : 0.0 ) ) / sc;
+   E.g[ k ]( h ) =
+     ( hr.rhs -
+       ( sr.alpha.size() ? sr.alpha.transpose().dot( v_c[ k ] ) : 0.0 ) ) /
+     sc;
    }
   }
 
@@ -757,15 +761,15 @@ void HQPStageSolver::solve_eqp( const std::vector< char > & work ,
   double worst = 0;
   for( Index t = 0 ; t < v_hard.size() ; ++t )
    if( work[ t ] ) {
-    const double r = std::abs( hard_slack( t , zbar ) ) /
-                     ( 1 + std::abs( v_hard[ t ].rhs ) );
+    const double r =
+      std::abs( hard_slack( t , zbar ) ) / ( 1 + std::abs( v_hard[ t ].rhs ) );
     worst = std::max( worst , r );
     if( r > f_feas_tol )
      ok = false;
     }
   if( f_log && ( f_verb > 2 ) )
-   *f_log << "HQPStageSolver: rank tolerance " << tol << " residual "
-          << worst << " objective " << level_objective( zbar ) << std::endl;
+   *f_log << "HQPStageSolver: rank tolerance " << tol << " residual " << worst
+	  << " objective " << level_objective( zbar ) << std::endl;
   if( ok || ( tol >= 1e-6 ) )
    break;
   tol = std::max( 100 * tol , 1e-14 );
@@ -793,15 +797,16 @@ double HQPStageSolver::level_objective( const Vec & z ) const
  const auto & A = hb.get_A( f_p );
  const Index e0 = hb.get_eq_start( f_p );
  for( Index h = 0 ; h < Index( A.rows() ) ; ++h ) {
-  const double v = hb.get_we()[ e0 + h ] *
-                   ( row_dot( A , h , z ) - hb.get_b()[ e0 + h ] );
+  const double v =
+    hb.get_we()[ e0 + h ] * ( row_dot( A , h , z ) - hb.get_b()[ e0 + h ] );
   val += v * v;
   }
  const auto & C = hb.get_C( f_p );
  const Index i0 = hb.get_ineq_start( f_p );
  for( Index h = 0 ; h < Index( C.rows() ) ; ++h ) {
-  const double w = std::max( 0.0 , hb.get_wi()[ i0 + h ] *
-                             ( row_dot( C , h , z ) - hb.get_d()[ i0 + h ] ) );
+  const double w =
+    std::max( 0.0 , hb.get_wi()[ i0 + h ] *
+		     ( row_dot( C , h , z ) - hb.get_d()[ i0 + h ] ) );
   val += w * w;
   }
 
@@ -835,7 +840,7 @@ int HQPStageSolver::compute( bool changedvars )
  if( ! hb ) {
   unlock();
   throw( std::invalid_argument( "HQPStageSolver::compute: the Block is not "
-                                "an HQPBlock" ) );
+				"an HQPBlock" ) );
   }
 
  const bool owned = hb->is_owned_by( f_id );
@@ -845,7 +850,8 @@ int HQPStageSolver::compute( bool changedvars )
   }
 
  // the locks are released also when the HQPBlock does not fit
- struct Release {
+ struct Release
+ {
   HQPStageSolver * s;
   HQPBlock * b;
   bool owned;
@@ -862,10 +868,9 @@ int HQPStageSolver::compute( bool changedvars )
  f_hb = hb;
  f_p = hb->get_level();
  if( f_p < hb->get_dynamics_level() )
-  throw( std::invalid_argument( where + "level " + std::to_string( f_p ) +
-                                " is above the level " +
-                                std::to_string( hb->get_dynamics_level() ) +
-                                " of the dynamics" ) );
+  throw( std::invalid_argument(
+    where + "level " + std::to_string( f_p ) + " is above the level " +
+    std::to_string( hb->get_dynamics_level() ) + " of the dynamics" ) );
  if( hb->get_x().empty() )
   throw( std::logic_error( where + "the Variable are not there" ) );
 
@@ -876,19 +881,20 @@ int HQPStageSolver::compute( bool changedvars )
 
  for( Index q = 0 ; q <= f_p ; ++q ) {
   auto check = [ & ]( const std::vector< StageRow > & rows , Index first ,
-                      Index m , const char * kind ) {
+		      Index m , const char * kind ) {
    for( Index h = 0 ; h < m ; ++h )
     if( ! rows[ first + h ].fits )
      throw( std::invalid_argument( where + kind + " row " +
-                                   std::to_string( h ) + " of level " +
-                                   std::to_string( q ) + " has an entry "
-                                   "out of its stage" ) );
+				   std::to_string( h ) + " of level " +
+				   std::to_string( q ) +
+				   " has an entry "
+				   "out of its stage" ) );
    };
   if( q != f_dyn )
    check( v_eq_rows , hb->get_eq_start( q ) , hb->get_num_eq_rows( q ) ,
-          "equality" );
+	  "equality" );
   check( v_in_rows , hb->get_ineq_start( q ) , hb->get_num_ineq_rows( q ) ,
-         "inequality" );
+	 "inequality" );
   }
 
  const auto & b = hb->get_b();
@@ -909,7 +915,7 @@ int HQPStageSolver::compute( bool changedvars )
    const Index row = e0 + v_dyn_row[ k ][ i ];
    if( we[ row ] == 0 )
     throw( std::invalid_argument( where + "a row of the dynamics has "
-                                  "weight 0" ) );
+					  "weight 0" ) );
    double rhs = b[ row ];
    if( f_p > f_dyn )
     rhs += vv[ row ].get_value() / we[ row ];
@@ -927,15 +933,15 @@ int HQPStageSolver::compute( bool changedvars )
    for( Index h = 0 ; h < hb->get_num_eq_rows( q ) ; ++h ) {
     const Index i = hb->get_eq_start( q ) + h;
     if( we[ i ] != 0 )
-     v_hard.push_back( { true , q , h , i ,
-                         b[ i ] + vv[ i ].get_value() / we[ i ] } );
+     v_hard.push_back(
+       { true , q , h , i , b[ i ] + vv[ i ].get_value() / we[ i ] } );
     }
   for( Index h = 0 ; h < hb->get_num_ineq_rows( q ) ; ++h ) {
    const Index i = hb->get_ineq_start( q ) + h;
    if( wi[ i ] != 0 ) {
     hard_of[ i ] = v_hard.size();
-    v_hard.push_back( { false , q , h , i ,
-                        d[ i ] + ww[ i ].get_value() / wi[ i ] } );
+    v_hard.push_back(
+      { false , q , h , i , d[ i ] + ww[ i ].get_value() / wi[ i ] } );
     }
    }
   }
@@ -956,8 +962,8 @@ int HQPStageSolver::compute( bool changedvars )
   z( j ) = hb->get_x()[ j ].get_value();
 
  auto hard_row = [ & ]( Index t ) -> const HQPBlock::SparseMatrix & {
-  return( v_hard[ t ].eq ? hb->get_A( v_hard[ t ].q ) :
-                           hb->get_C( v_hard[ t ].q ) );
+  return( v_hard[ t ].eq ? hb->get_A( v_hard[ t ].q )
+			  : hb->get_C( v_hard[ t ].q ) );
   };
  auto slack = [ & ]( Index t , const Vec & x ) {
   return( hard_slack( t , x ) );
@@ -969,8 +975,8 @@ int HQPStageSolver::compute( bool changedvars )
   std::vector< char > viol( v_task_in.size() , 0 );
   for( Index t = 0 ; t < v_task_in.size() ; ++t ) {
    const Index i = v_task_in[ t ];
-   const double r = row_dot( hb->get_C( f_p ) ,
-                             i - hb->get_ineq_start( f_p ) , x ) - d[ i ];
+   const double r =
+     row_dot( hb->get_C( f_p ) , i - hb->get_ineq_start( f_p ) , x ) - d[ i ];
    viol[ t ] = ( r > 1e-15 * ( 1 + std::abs( d[ i ] ) ) );
    }
   return( viol );
@@ -979,7 +985,7 @@ int HQPStageSolver::compute( bool changedvars )
  auto infeasible = [ & ]( const Vec & x , const std::vector< char > & work ) {
   for( Index t = 0 ; t < v_hard.size() ; ++t )
    if( ( ! v_hard[ t ].eq ) && ( ! work[ t ] ) &&
-       ( slack( t , x ) < - tol_of( t ) ) )
+       ( slack( t , x ) < -tol_of( t ) ) )
     return( true );
   return( false );
   };
@@ -993,7 +999,7 @@ int HQPStageSolver::compute( bool changedvars )
    const double s = slack( t , z );
    if( s <= tol_of( t ) )
     work[ t ] = 1;
-   if( s < - tol_of( t ) )
+   if( s < -tol_of( t ) )
     start_violated = true;
    }
 
@@ -1083,7 +1089,7 @@ int HQPStageSolver::compute( bool changedvars )
    // step moves only by rounding, does not
    const double s = row_dot( hard_row( t ) , v_hard[ t ].h , dz );
    const double sl = slack( t , z );
-   if( ( s > 0 ) && ( sl - s < - tol_of( t ) / 2 ) ) {
+   if( ( s > 0 ) && ( sl - s < -tol_of( t ) / 2 ) ) {
     const double tt = std::max( 0.0 , sl ) / s;
     if( tt < T ) {
      T = tt;
@@ -1097,8 +1103,8 @@ int HQPStageSolver::compute( bool changedvars )
   else {
    start_violated = false;
    for( Index t = 0 ; t < v_hard.size() ; ++t )
-    if( ( ! v_hard[ t ].eq ) && work[ t ] &&
-        ( slack( t , z ) < - tol_of( t ) ) )
+    if( ( ! v_hard[ t ].eq ) && work[ t ] && ( slack( t ,
+						      z ) < -tol_of( t ) ) )
      start_violated = true;
    if( start_violated && ( f_incons > incons_tol ) ) {
     status = kError;
@@ -1133,7 +1139,7 @@ int HQPStageSolver::compute( bool changedvars )
    // step moves only by rounding, does not
    const double s = row_dot( hard_row( t ) , v_hard[ t ].h , dz );
    const double sl = slack( t , z );
-   if( ( s > 0 ) && ( sl - s < - tol_of( t ) / 2 ) ) {
+   if( ( s > 0 ) && ( sl - s < -tol_of( t ) / 2 ) ) {
     const double tt = std::max( 0.0 , sl ) / s;
     if( tt < T ) {
      T = tt;
@@ -1150,8 +1156,8 @@ int HQPStageSolver::compute( bool changedvars )
   // its rows), is taken to its end, so that the multipliers are read at the
   // point they belong to
   const bool still = ( dz.lpNorm< Eigen::Infinity >() <=
-                       1e-12 * ( 1 + z.lpNorm< Eigen::Infinity >() ) );
-  const bool flat = ( slope0 >= - 1e-14 * ( std::abs( phi ) + 1e-30 ) );
+		       1e-12 * ( 1 + z.lpNorm< Eigen::Infinity >() ) );
+  const bool flat = ( slope0 >= -1e-14 * ( std::abs( phi ) + 1e-30 ) );
 
   if( f_log && ( f_verb > 1 ) ) {
    double wres = 0 , wz = 0 , vz = 0;
@@ -1160,16 +1166,14 @@ int HQPStageSolver::compute( bool changedvars )
      wres = std::max( wres , std::abs( slack( t , zbar ) ) );
      wz = std::max( wz , std::abs( slack( t , z ) ) );
      }
-    else
-     if( ! v_hard[ t ].eq )
-      vz = std::max( vz , - slack( t , z ) );
-   *f_log << "HQPStageSolver: level " << f_p << " it " << f_iter
-          << " |W| " << std::count( work.begin() , work.end() , 1 )
-          << " |V| " << std::count( viol.begin() , viol.end() , 1 )
-          << " |d| " << dz.lpNorm< Eigen::Infinity >() << " step " << tstar
-          << " slope " << slope0 << " dropped " << f_eqp.dropped
-          << " to go " << f_eqp.to_go << " W residual " << wres
-          << " at z " << wz << " violation " << vz;
+    else if( ! v_hard[ t ].eq )
+     vz = std::max( vz , -slack( t , z ) );
+   *f_log << "HQPStageSolver: level " << f_p << " it " << f_iter << " |W| "
+	  << std::count( work.begin() , work.end() , 1 ) << " |V| "
+	  << std::count( viol.begin() , viol.end() , 1 ) << " |d| "
+	  << dz.lpNorm< Eigen::Infinity >() << " step " << tstar << " slope "
+	  << slope0 << " dropped " << f_eqp.dropped << " to go " << f_eqp.to_go
+	  << " W residual " << wres << " at z " << wz << " violation " << vz;
    if( blk != Inf< Index >() )
     *f_log << " blocked by " << v_hard[ blk ].i << " at " << T;
    *f_log << std::endl;
@@ -1177,7 +1181,7 @@ int HQPStageSolver::compute( bool changedvars )
 
   if( still ) {
    // the most negative multiplier of an inequality row of the working set
-   double mmin = - f_dual_tol;
+   double mmin = -f_dual_tol;
    Index out = Inf< Index >();
    for( Index k = 0 ; k <= N ; ++k )
     for( Index h = 0 ; h < v_eqp_rows[ k ].size() ; ++h ) {
@@ -1192,7 +1196,7 @@ int HQPStageSolver::compute( bool changedvars )
     break;
    if( f_log && ( f_verb > 1 ) )
     *f_log << "HQPStageSolver: " << v_hard[ out ].i << " leaves, multiplier "
-           << mmin << std::endl;
+	   << mmin << std::endl;
    work[ out ] = 0;
    continue;
    }
@@ -1235,10 +1239,10 @@ int HQPStageSolver::compute( bool changedvars )
 
  if( f_log && f_verb )
   *f_log << "HQPStageSolver: level " << f_p << " status " << f_status
-         << " iterations " << f_iter << ( f_warm ? " (warm)" : "" )
-         << " |W| " << v_W.size() << " |V| " << v_V.size()
-         << " inconsistency " << std::setprecision( 3 ) << f_incons
-         << " value " << std::setprecision( 12 ) << f_value << std::endl;
+	 << " iterations " << f_iter << ( f_warm ? " (warm)" : "" ) << " |W| "
+	 << v_W.size() << " |V| " << v_V.size() << " inconsistency "
+	 << std::setprecision( 3 ) << f_incons << " value "
+	 << std::setprecision( 12 ) << f_value << std::endl;
 
  return( f_status );
 
@@ -1262,11 +1266,13 @@ void HQPStageSolver::get_var_solution( Configuration * solc )
  const Index e0 = hb->get_eq_start( p ) , i0 = hb->get_ineq_start( p );
  Vec_double v( A.rows() ) , w( C.rows() );
  for( Index h = 0 ; h < v.size() ; ++h )
-  v[ h ] = hb->get_we()[ e0 + h ] *
-           ( row_dot( A , h , f_z ) - hb->get_b()[ e0 + h ] );
+  v[ h ] =
+    hb->get_we()[ e0 + h ] * ( row_dot( A , h ,
+					f_z ) - hb->get_b()[ e0 + h ] );
  for( Index h = 0 ; h < w.size() ; ++h )
   w[ h ] = std::max( 0.0 , hb->get_wi()[ i0 + h ] *
-                     ( row_dot( C , h , f_z ) - hb->get_d()[ i0 + h ] ) );
+			    ( row_dot( C , h ,
+				       f_z ) - hb->get_d()[ i0 + h ] ) );
  hb->set_slack_values( p , v , w );
  }
 

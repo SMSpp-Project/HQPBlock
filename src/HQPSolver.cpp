@@ -145,7 +145,8 @@ int HQPSolver::compute( bool changedvars )
  lock();
 
  // the lock is released also when an inner Solver throws
- struct Release {
+ struct Release
+ {
   HQPSolver * s;
   ~Release() { s->unlock(); }
   } release{ this };

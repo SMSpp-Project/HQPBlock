@@ -161,7 +161,7 @@ void write_rows( netCDF::NcGroup & group , const std::string & pfx ,
 // equality and mi inequality rows, as described in HQPBlock::StageData
 
 void check_stages( const HQPBlock::StageData & st , std::size_t n ,
-                   std::size_t P , std::size_t me , std::size_t mi )
+		   std::size_t P , std::size_t me , std::size_t mi )
 {
  auto fail = []( const std::string & what ) {
   throw( std::invalid_argument( "HQPBlock::guts_of_load: " + what ) );
@@ -170,8 +170,8 @@ void check_stages( const HQPBlock::StageData & st , std::size_t n ,
  const auto N = st.num_stages;
  if( ! N ) {
   if( ! ( st.var_stage.empty() && st.var_state.empty() &&
-          st.eq_stage.empty() && st.ineq_stage.empty() &&
-          ( st.dynamics_level == 0 ) ) )
+	  st.eq_stage.empty() && st.ineq_stage.empty() &&
+	  ( st.dynamics_level == 0 ) ) )
    fail( "stage data with no stages" );
   return;
   }
@@ -191,11 +191,11 @@ void check_stages( const HQPBlock::StageData & st , std::size_t n ,
    continue;
   if( rs.size() != ( k ? mi : me ) )
    fail( std::string( k ? "IneqStage" : "EqStage" ) + " has not one entry "
-         "for each row" );
+						      "for each row" );
   if( std::any_of( rs.begin() , rs.end() ,
-                   [ N ]( auto r ) { return( r >= N ); } ) )
+		   [ N ]( auto r ) { return( r >= N ); } ) )
    fail( std::string( k ? "IneqStage" : "EqStage" ) + " out of the "
-         "stages" );
+						      "stages" );
   }
 
  if( st.dynamics_level >= P )
@@ -211,16 +211,16 @@ void check_stages( const HQPBlock::StageData & st , std::size_t n ,
 /*--------------------------------------------------------------------------*/
 
 void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
-                     std::vector< Vec_double > && b ,
-                     std::vector< SparseMatrix > && C ,
-                     std::vector< Vec_double > && d ,
-                     std::vector< Vec_double > && we ,
-                     std::vector< Vec_double > && wi , double eps ,
-                     Vec_double && rw , StageData && stages )
+		     std::vector< Vec_double > && b ,
+		     std::vector< SparseMatrix > && C ,
+		     std::vector< Vec_double > && d ,
+		     std::vector< Vec_double > && we ,
+		     std::vector< Vec_double > && wi , double eps ,
+		     Vec_double && rw , StageData && stages )
 {
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
-               std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
-               std::move( rw ) , std::move( stages ) );
+	       std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
+	       std::move( rw ) , std::move( stages ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -234,12 +234,12 @@ void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
 /*--------------------------------------------------------------------------*/
 
 void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
-                             std::vector< Vec_double > && b ,
-                             std::vector< SparseMatrix > && C ,
-                             std::vector< Vec_double > && d ,
-                             std::vector< Vec_double > && we ,
-                             std::vector< Vec_double > && wi , double eps ,
-                             Vec_double && rw , StageData && stages )
+			     std::vector< Vec_double > && b ,
+			     std::vector< SparseMatrix > && C ,
+			     std::vector< Vec_double > && d ,
+			     std::vector< Vec_double > && we ,
+			     std::vector< Vec_double > && wi , double eps ,
+			     Vec_double && rw , StageData && stages )
 {
  const Index P = A.size();
  if( ( ! n ) || ( ! P ) )
@@ -374,8 +374,8 @@ void HQPBlock::deserialize( const netCDF::NcGroup & group )
 
  // the NBModification is issued by Block::deserialize()
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
-               std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
-               std::move( rw ) , std::move( st ) );
+	       std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
+	       std::move( rw ) , std::move( st ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -413,7 +413,7 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
 
  group.addDim( "NumStages" , f_stages.num_stages );
  auto put = [ & ]( const std::string & name , const netCDF::NcDim & dim ,
-                   const std::vector< Index > & data ) {
+		   const std::vector< Index > & data ) {
   std::vector< unsigned int > u( data.begin() , data.end() );
   group.addVar( name , netCDF::NcUint() , dim ).putVar( u.data() );
   };
@@ -424,7 +424,7 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
  if( ! f_stages.ineq_stage.empty() )
   put( "IneqStage" , group.getDim( "NumIneqRows" ) , f_stages.ineq_stage );
  const unsigned int dyn = f_stages.dynamics_level;
- group.addVar( "DynamicsLevel" , netCDF::NcUint() ).putVar( & dyn );
+ group.addVar( "DynamicsLevel" , netCDF::NcUint() ).putVar( &dyn );
 
  }  // end( HQPBlock::serialize )
 
@@ -894,12 +894,12 @@ void HQPBlock::print( std::ostream & output , char vlvl ) const
         << " levels, regularization " << f_eps << std::endl;
  if( f_stages.num_stages ) {
   output << " " << f_stages.num_stages << " stages, the dynamics at level "
-         << f_stages.dynamics_level << std::endl;
+	 << f_stages.dynamics_level << std::endl;
   if( vlvl > 0 ) {
    output << "  stage of each column (s state, u input):";
    for( Index j = 0 ; j < f_n ; ++j )
     output << " " << ( f_stages.var_state[ j ] ? "s" : "u" )
-           << f_stages.var_stage[ j ];
+	   << f_stages.var_stage[ j ];
    output << std::endl;
    }
   }
