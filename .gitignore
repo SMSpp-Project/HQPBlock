@@ -30,7 +30,6 @@
 
 # --- Test binaries ------------------------------------------
 test/HQPBlock_unit_test
-test/HQPBlock_radial_test
 
 # --- CMake --------------------------------------------------
 build/

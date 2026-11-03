@@ -46,17 +46,13 @@ include $(SMS++SDR)/lib/makefile-inc
 HQPBkSDR = ..
 include $(HQPBkSDR)/makefile-s
 
-# MILPSolver, which provides the inner Solver of the HQPSolver
-MILPSSDR = ../../MILPSolver
-include $(MILPSSDR)/makefile-s
-
 # main module (linking phase) - - - - - - - - - - - - - - - - - - - - - - - -
 
 # object files
-MOBJ =  $(HQPBkOBJ) $(MILPSOBJ) $(SMS++OBJ)
+MOBJ =  $(HQPBkOBJ) $(SMS++OBJ)
 
 # libraries
-MLIB =  $(HQPBkLIB) $(MILPSLIB) $(SMS++LIB)
+MLIB =  $(HQPBkLIB) $(SMS++LIB)
 
 $(DIR)/$(NAME): $(MOBJ) $(DIR)/test.o
 	$(CC) -o $(DIR)/$(NAME) $(DIR)/test.o $(MOBJ) $(MLIB) $(SW)
@@ -64,13 +60,13 @@ $(DIR)/$(NAME): $(MOBJ) $(DIR)/test.o
 # dependencies: every .o from its .cpp + every recursively included .h- - - -
 
 # include directives
-MINC =  $(SMS++INC) $(HQPBkINC) $(MILPSINC)
+MINC =  $(SMS++INC) $(HQPBkINC)
 
 # includes
-MH =    $(SMS++H) $(HQPBkH) $(MILPSH)
+MH =    $(SMS++H) $(HQPBkH)
 
 # compile command
-$(DIR)/test.o: $(DIR)/test.cpp $(DIR)/test_common.h $(MH)
+$(DIR)/test.o: $(DIR)/test.cpp $(MH)
 	$(CC) -c $(DIR)/test.cpp -o $@ $(MINC) $(SW)
 
 # clean target

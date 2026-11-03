@@ -109,6 +109,11 @@ if (BUILD_SHARED_LIBS)
         # for by -u included, even under -dead_strip_dylibs
         target_link_options(${modName} INTERFACE
                 "LINKER:-u,_SMSpp_force_load_${modName}")
+    elseif (MINGW)
+        # the PE linker imports a DLL for the symbols asked for, -u
+        # included
+        target_link_options(${modName} INTERFACE
+                "LINKER:-u,SMSpp_force_load_${modName}")
     endif ()
 endif ()
 
@@ -120,7 +125,9 @@ endif ()
 # Note: do not GLOB files here.
 target_sources(${modName} PRIVATE
         src/HQPBlock.cpp
-        src/HQPSolver.cpp)
+        src/HQPDistBlock.cpp
+        src/HQPSolver.cpp
+        src/HQPStageSolver.cpp)
 
 # When using target_include_directories(), PUBLIC means that any targets
 # that link to this target also need that include directory.
@@ -189,10 +196,11 @@ endif ()
 # Model Predictive Control of 8 robots, with the solution of each level of
 # the code that generated them (nc4) [see tools/npz2nc4.py].
 #
-# The instances the tests read are, for each <fmt> of DATA_FORMATS, the
-# archive <fmt>.tgz in the GitLab Package Registry of the project
-# DATA_PROJECT, extracted into data/<fmt>. Nothing of this is built with the
-# module: extract_<DATA_PREFIX>_<fmt> downloads the archive (by building
+# The instances the system tests read [see the suite HQPBlock of the tests
+# of the umbrella] are, for each <fmt> of DATA_FORMATS, the archive <fmt>.tgz
+# in the GitLab Package Registry of the project DATA_PROJECT, extracted into
+# data/<fmt>. Nothing of this is built with the module:
+# extract_<DATA_PREFIX>_<fmt> downloads the archive (by building
 # download_<DATA_PREFIX>_<fmt>) and extracts it, and it is built when the
 # tests that read the instances are run, by a test that sets up the fixture
 # <DATA_PREFIX>_<fmt>_extracted they require.
@@ -203,7 +211,7 @@ endif ()
 # tree holding the data of an older version (a cache of the CI, or a clone
 # that has been extracted before) downloads and extracts again instead of
 # taking them for the current ones.
-set(DATA_VERSION 2026-10-26)
+set(DATA_VERSION 2026-10-31)
 set(DATA_PROJECT 88117102)
 set(DATA_PREFIX hqp)
 set(DATA_FORMATS nc4)

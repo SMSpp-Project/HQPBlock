@@ -76,11 +76,14 @@ void HQPSolver::set_Block( Block * block )
 void HQPSolver::set_par( idx_type par , int value )
 {
  switch( par ) {
-  case( int_HQP_Prox ):
+  case( intProxCenter ):
    f_prox = value ? 1 : 0;
    break;
-  case( int_HQP_RelaxLower ):
+  case( intRelaxLower ):
    f_relax = value ? 1 : 0;
+   break;
+  case( intLevelScale ):
+   f_scale = value ? 1 : 0;
    break;
   case( intLogVerb ):
    f_verb = value;
@@ -94,13 +97,13 @@ void HQPSolver::set_par( idx_type par , int value )
 
 void HQPSolver::set_par( idx_type par , double value )
 {
- if( par != dbl_HQP_SlackTol ) {
+ if( par != dblSlackTol ) {
   Solver::set_par( par , value );
   return;
   }
  if( ! ( value >= 0 ) )
   throw( std::invalid_argument( "HQPSolver::set_par: negative "
-                                "dbl_HQP_SlackTol" ) );
+                                "dblSlackTol" ) );
  f_tol = value;
  }
 
@@ -108,7 +111,7 @@ void HQPSolver::set_par( idx_type par , double value )
 
 void HQPSolver::set_par( idx_type par , std::string && value )
 {
- if( par != str_HQP_BSCfg ) {
+ if( par != strInnerBSC ) {
   Solver::set_par( par , std::move( value ) );
   return;
   }
@@ -141,15 +144,27 @@ int HQPSolver::compute( bool changedvars )
 {
  lock();
 
+ // the lock is released also when an inner Solver throws
+ struct Release
+ {
+  HQPSolver * s;
+  ~Release() { s->unlock(); }
+  } release{ this };
+
  v_stat.clear();
  v_xl.clear();
  v_vl.clear();
  v_wl.clear();
+ v_prev = std::move( v_obj );
+ v_obj.clear();
  v_val.clear();
 
- auto hb = dynamic_cast< HQPBlock * >( f_Block );
- if( ( ! hb ) || ( ! f_inner ) || ( ! hb->get_num_levels() ) ) {
-  unlock();
+ // the inner Solvers dropped by an NBModification are created anew
+ if( v_inner.empty() )
+  create_inner();
+
+ auto hb = dynamic_cast< HQPLevelBlock * >( f_Block );
+ if( ( ! hb ) || v_inner.empty() || ( ! hb->get_num_levels() ) ) {
   return( f_status = kError );
   }
 
@@ -168,7 +183,6 @@ int HQPSolver::compute( bool changedvars )
 
  const int verb = f_verb;
  const Index P = hb->get_num_levels();
- const Index n = hb->get_num_var();
 
  lock_block();
  hb->reset_levels( f_relax );
@@ -176,10 +190,50 @@ int HQPSolver::compute( bool changedvars )
  unlock_block();
 
  f_status = kOK;
+ f_iter = 0;
  for( Index p = 0 ; p < P ; ++p ) {
-  const int st = f_inner->compute();
+  // the inner Solver of a level is created the first time the level is
+  // solved, and it loads the HQPBlock as it is then
+  if( v_inner.size() <= p )
+   v_inner.push_back( new_inner() );
+
+  auto inner = v_inner[ p ];
+
+  // the scale of the level, from the value of its Objective (the slacks
+  // and the regularization) in the previous compute()
+  const auto scale_of = []( double v ) {
+   return( ( v > 1e-10 ) && ( v < Inf< double >() ) ? 1 / v : 1.0 );
+   };
+  const bool known = ( p < v_prev.size() );
+  double scale = 1;
+  if( f_scale ) {
+   scale = known ? scale_of( v_prev[ p ] ) : 1.0;
+   lock_block();
+   hb->set_objective_scale( scale );
+   unlock_block();
+   }
+
+  int st = inner->compute();
+  f_iter += inner->get_elapsed_iterations();
+
+  // the first time, a level of small value is solved again at its scale,
+  // starting from the solution just found
+  if( f_scale && ( ! known ) && ( st >= kOK ) && ( st < kError ) &&
+      inner->has_var_solution() ) {
+   const bool again = ( scale_of( inner->get_ub() ) > 10 );
+   if( again ) {
+    scale = scale_of( inner->get_ub() );
+    lock_block();
+    hb->set_objective_scale( scale );
+    unlock_block();
+    }
+   if( again ) {
+    st = inner->compute();
+    f_iter += inner->get_elapsed_iterations();
+    }
+   }
   v_stat.push_back( st );
-  if( ( st < kOK ) || ( st >= kError ) || ( ! f_inner->has_var_solution() ) )
+  if( ( st < kOK ) || ( st >= kError ) || ( ! inner->has_var_solution() ) )
   {
    f_status = ( ( st >= kOK ) && ( st < kError ) ) ? kError : st;
    if( f_log && verb )
@@ -190,12 +244,14 @@ int HQPSolver::compute( bool changedvars )
   if( ( st != kOK ) && ( f_status == kOK ) )
    f_status = st;
 
-  lock_block();
-  f_inner->get_var_solution();
+  if( f_scale )
+   v_obj.push_back( inner->get_ub() / scale );
 
-  Vec_double x( n );
-  for( Index j = 0 ; j < n ; ++j )
-   x[ j ] = hb->get_x()[ j ].get_value();
+  lock_block();
+  inner->get_var_solution();
+
+  Vec_double x;
+  hb->get_x_values( x );
   Vec_double v , w;
   v_val.push_back( hb->level_slacks( p , v , w ) );
   v_vl.push_back( std::move( v ) );
@@ -215,7 +271,12 @@ int HQPSolver::compute( bool changedvars )
   unlock_block();
   }
 
- unlock();
+ if( f_scale ) {
+  lock_block();
+  hb->set_objective_scale( 1 );
+  unlock_block();
+  }
+
  return( f_status );
 
  }  // end( HQPSolver::compute )
@@ -226,55 +287,64 @@ int HQPSolver::compute( bool changedvars )
 
 void HQPSolver::get_var_solution( Configuration * solc )
 {
- auto hb = dynamic_cast< HQPBlock * >( f_Block );
+ auto hb = dynamic_cast< HQPLevelBlock * >( f_Block );
  if( ( ! hb ) || v_xl.empty() )
   return;
 
- // the ColVariable are written as they are, but a fixed slack only takes
- // the value it is fixed at [see ColVariable::set_value()]
- auto & x = const_cast< std::vector< ColVariable > & >( hb->get_x() );
- auto & v = const_cast< std::vector< ColVariable > & >( hb->get_v() );
- auto & w = const_cast< std::vector< ColVariable > & >( hb->get_w() );
- for( Index j = 0 ; j < x.size() ; ++j )
-  x[ j ].set_value( v_xl.back()[ j ] );
- for( Index p = 0 ; p < v_xl.size() ; ++p ) {
-  for( Index h = 0 ; h < v_vl[ p ].size() ; ++h )
-   v[ hb->get_eq_start( p ) + h ].set_value( v_vl[ p ][ h ] );
-  for( Index h = 0 ; h < v_wl[ p ].size() ; ++h )
-   w[ hb->get_ineq_start( p ) + h ].set_value( v_wl[ p ][ h ] );
-  }
+ // a fixed slack only takes the value it is fixed at
+ hb->set_x_values( v_xl.back() );
+ for( Index p = 0 ; p < v_xl.size() ; ++p )
+  hb->set_slack_values( p , v_vl[ p ] , v_wl[ p ] );
  }  // end( HQPSolver::get_var_solution )
 
 /*--------------------------------------------------------------------------*/
 /*--------------------------- PROTECTED METHODS ----------------------------*/
 /*--------------------------------------------------------------------------*/
-// the first Solver of the BlockSolverConfig that is in the factory becomes
-// the inner Solver, with its ComputeConfig (if any)
+// the inner Solver of level 0; those of the other levels are created by
+// compute()
 
 void HQPSolver::create_inner( void )
 {
+ if( auto s = new_inner() )
+  v_inner.push_back( s );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the first Solver of the BlockSolverConfig that is in the factory, with its
+// ComputeConfig (if any), attached to the Block; nullptr if there is none
+
+Solver * HQPSolver::new_inner( void )
+{
+ if( ! ( f_Block && f_bsc ) )
+  return( nullptr );
+
  const auto & names = f_bsc->get_SolverNames();
  const auto & cfgs = f_bsc->get_SolverConfigs();
  for( Index i = 0 ; i < names.size() ; ++i ) {
   if( ! Solver::has_Solver( names[ i ] ) )
    continue;
-  f_inner = Solver::new_Solver( names[ i ] );
+  auto s = Solver::new_Solver( names[ i ] );
   if( ( i < cfgs.size() ) && cfgs[ i ] )
-   f_inner->set_ComputeConfig( cfgs[ i ] );
-  f_inner->set_Block( f_Block );
-  return;
+   s->set_ComputeConfig( cfgs[ i ] );
+  s->set_Block( f_Block );
+  // after the ComputeConfig, which may create Solvers of its own that the
+  // log is passed to (e.g., the inner Solver of a LagrangianDualSolver)
+  if( f_log )
+   s->set_log( f_log );
+  return( s );
   }
+ return( nullptr );
  }
 
 /*--------------------------------------------------------------------------*/
 
 void HQPSolver::drop_inner( void )
 {
- if( ! f_inner )
-  return;
- f_inner->set_Block( nullptr );
- delete f_inner;
- f_inner = nullptr;
+ for( auto s : v_inner ) {
+  s->set_Block( nullptr );
+  delete s;
+  }
+ v_inner.clear();
  }
 
 /*--------------------------------------------------------------------------*/

@@ -31,8 +31,9 @@
 
 module;
 
-#include "HQPBlock.h"
+#include "HQPDistBlock.h"
 #include "HQPSolver.h"
+#include "HQPStageSolver.h"
 
 /*--------------------------------------------------------------------------*/
 /*----------------------------- MODULE PURVIEW -----------------------------*/
@@ -46,9 +47,16 @@ export namespace SMSpp_di_unipi_it {
 
  // HQPBlock.h
  using SMSpp_di_unipi_it::HQPBlock;
+ using SMSpp_di_unipi_it::HQPLevelBlock;
+
+ // HQPDistBlock.h
+ using SMSpp_di_unipi_it::HQPDistBlock;
 
  // HQPSolver.h
  using SMSpp_di_unipi_it::HQPSolver;
+
+ // HQPStageSolver.h
+ using SMSpp_di_unipi_it::HQPStageSolver;
 }
 
 /*--------------------------------------------------------------------------*/

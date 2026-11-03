@@ -25,6 +25,8 @@
 
 #include <numeric>
 
+#include "ColVariableSolution.h"
+
 #include "SMSnetCDF.h"
 
 /*--------------------------------------------------------------------------*/
@@ -154,6 +156,54 @@ void write_rows( netCDF::NcGroup & group , const std::string & pfx ,
                                                                wgh.data() );
  }
 
+/*--------------------------------------------------------------------------*/
+// checks the stage structure of a hierarchy of n variables, P levels, me
+// equality and mi inequality rows, as described in HQPBlock::StageData
+
+void check_stages( const HQPBlock::StageData & st , std::size_t n ,
+		   std::size_t P , std::size_t me , std::size_t mi )
+{
+ auto fail = []( const std::string & what ) {
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: " + what ) );
+  };
+
+ const auto N = st.num_stages;
+ if( ! N ) {
+  if( ! ( st.var_stage.empty() && st.var_state.empty() &&
+	  st.eq_stage.empty() && st.ineq_stage.empty() &&
+	  ( st.dynamics_level == 0 ) ) )
+   fail( "stage data with no stages" );
+  return;
+  }
+
+ if( ( st.var_stage.size() != n ) || ( st.var_state.size() != n ) )
+  fail( "VarStage or VarState has not n entries" );
+ for( std::size_t j = 0 ; j < n ; ++j ) {
+  if( st.var_state[ j ] > 1 )
+   fail( "VarState of column " + std::to_string( j ) + " is not 0 or 1" );
+  if( st.var_stage[ j ] + ( st.var_state[ j ] ? 0 : 1 ) > N )
+   fail( "column " + std::to_string( j ) + " out of the stages" );
+  }
+
+ for( int k = 0 ; k < 2 ; ++k ) {
+  const auto & rs = k ? st.ineq_stage : st.eq_stage;
+  if( rs.empty() )
+   continue;
+  if( rs.size() != ( k ? mi : me ) )
+   fail( std::string( k ? "IneqStage" : "EqStage" ) + " has not one entry "
+						      "for each row" );
+  if( std::any_of( rs.begin() , rs.end() ,
+		   [ N ]( auto r ) { return( r >= N ); } ) )
+   fail( std::string( k ? "IneqStage" : "EqStage" ) + " out of the "
+						      "stages" );
+  }
+
+ if( st.dynamics_level >= P )
+  fail( "DynamicsLevel is not a level" );
+ }
+
+/*--------------------------------------------------------------------------*/
+
 }  // end( unnamed namespace )
 
 /*--------------------------------------------------------------------------*/
@@ -161,14 +211,16 @@ void write_rows( netCDF::NcGroup & group , const std::string & pfx ,
 /*--------------------------------------------------------------------------*/
 
 void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
-                     std::vector< Vec_double > && b ,
-                     std::vector< SparseMatrix > && C ,
-                     std::vector< Vec_double > && d ,
-                     std::vector< Vec_double > && we ,
-                     std::vector< Vec_double > && wi , double eps )
+		     std::vector< Vec_double > && b ,
+		     std::vector< SparseMatrix > && C ,
+		     std::vector< Vec_double > && d ,
+		     std::vector< Vec_double > && we ,
+		     std::vector< Vec_double > && wi , double eps ,
+		     Vec_double && rw , StageData && stages )
 {
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
-               std::move( d ) , std::move( we ) , std::move( wi ) , eps );
+	       std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
+	       std::move( rw ) , std::move( stages ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -182,11 +234,12 @@ void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
 /*--------------------------------------------------------------------------*/
 
 void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
-                             std::vector< Vec_double > && b ,
-                             std::vector< SparseMatrix > && C ,
-                             std::vector< Vec_double > && d ,
-                             std::vector< Vec_double > && we ,
-                             std::vector< Vec_double > && wi , double eps )
+			     std::vector< Vec_double > && b ,
+			     std::vector< SparseMatrix > && C ,
+			     std::vector< Vec_double > && d ,
+			     std::vector< Vec_double > && we ,
+			     std::vector< Vec_double > && wi , double eps ,
+			     Vec_double && rw , StageData && stages )
 {
  const Index P = A.size();
  if( ( ! n ) || ( ! P ) )
@@ -200,6 +253,13 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
  if( ! ( eps >= 0 ) )
   throw( std::invalid_argument( "HQPBlock::guts_of_load: negative "
                                 "regularization" ) );
+ if( ( ! rw.empty() ) && ( rw.size() != n ) )
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: wrong size of "
+                                "the weights of the regularization" ) );
+ if( std::any_of( rw.begin() , rw.end() ,
+                  []( double r ) { return( ! ( r > 0 ) ); } ) )
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: a weight of the "
+                                "regularization is not positive" ) );
 
  for( Index p = 0 ; p < P ; ++p ) {
   if( ( Index( A[ p ].cols() ) != n ) || ( Index( C[ p ].cols() ) != n ) )
@@ -221,10 +281,19 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
                                  "wi of level " + std::to_string( p ) ) );
   }
 
+ Index me = 0 , mi = 0;
+ for( Index p = 0 ; p < P ; ++p ) {
+  me += b[ p ].size();
+  mi += d[ p ].size();
+  }
+ check_stages( stages , n , P , me , mi );
+
  guts_of_destructor();
 
  f_n = n;
+ f_stages = std::move( stages );
  f_eps = eps;
+ v_rw = std::move( rw );
  v_center.clear();
 
  v_eq_start.assign( P + 1 , 0 );
@@ -276,10 +345,37 @@ void HQPBlock::deserialize( const netCDF::NcGroup & group )
 
  double eps = 0;
  ::deserialize( group , eps , "Regularization" , true );
+ Vec_double rw;
+ ::deserialize( group , "RegularizationWeight" , n , rw , true );
+
+ StageData st;
+ std::size_t N = 0;
+ ::deserialize_dim( group , "NumStages" , N );
+ if( N ) {
+  std::size_t me = 0 , mi = 0;
+  ::deserialize_dim( group , "NumEqRows" , me );
+  ::deserialize_dim( group , "NumIneqRows" , mi );
+  std::vector< unsigned int > vs , vt , es , is;
+  ::deserialize( group , "VarStage" , n , vs , false );
+  ::deserialize( group , "VarState" , n , vt , false );
+  if( me )
+   ::deserialize( group , "EqStage" , me , es , true );
+  if( mi )
+   ::deserialize( group , "IneqStage" , mi , is , true );
+  unsigned int dl = 0;
+  ::deserialize( group , dl , "DynamicsLevel" , true );
+  st.num_stages = N;
+  st.var_stage.assign( vs.begin() , vs.end() );
+  st.var_state.assign( vt.begin() , vt.end() );
+  st.eq_stage.assign( es.begin() , es.end() );
+  st.ineq_stage.assign( is.begin() , is.end() );
+  st.dynamics_level = dl;
+  }
 
  // the NBModification is issued by Block::deserialize()
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
-               std::move( d ) , std::move( we ) , std::move( wi ) , eps );
+	       std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
+	       std::move( rw ) , std::move( st ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -298,7 +394,7 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
 {
  Block::serialize( group );
 
- group.addDim( "NumVar" , f_n );
+ auto dn = group.addDim( "NumVar" , f_n );
  auto dl = group.addDim( "NumLevels" , get_num_levels() );
 
  write_rows( group , "Eq" , dl , v_A , v_b , v_we );
@@ -306,6 +402,29 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
 
  if( f_eps != 0 )
   group.addVar( "Regularization" , netCDF::NcDouble() ).putVar( &f_eps );
+
+ if( std::any_of( v_rw.begin() , v_rw.end() ,
+                  []( double r ) { return( r != 1 ); } ) )
+  group.addVar( "RegularizationWeight" , netCDF::NcDouble() , dn ).putVar(
+                                                               v_rw.data() );
+
+ if( ! f_stages.num_stages )
+  return;
+
+ group.addDim( "NumStages" , f_stages.num_stages );
+ auto put = [ & ]( const std::string & name , const netCDF::NcDim & dim ,
+		   const std::vector< Index > & data ) {
+  std::vector< unsigned int > u( data.begin() , data.end() );
+  group.addVar( name , netCDF::NcUint() , dim ).putVar( u.data() );
+  };
+ put( "VarStage" , dn , f_stages.var_stage );
+ put( "VarState" , dn , f_stages.var_state );
+ if( ! f_stages.eq_stage.empty() )
+  put( "EqStage" , group.getDim( "NumEqRows" ) , f_stages.eq_stage );
+ if( ! f_stages.ineq_stage.empty() )
+  put( "IneqStage" , group.getDim( "NumIneqRows" ) , f_stages.ineq_stage );
+ const unsigned int dyn = f_stages.dynamics_level;
+ group.addVar( "DynamicsLevel" , netCDF::NcUint() ).putVar( &dyn );
 
  }  // end( HQPBlock::serialize )
 
@@ -398,6 +517,7 @@ void HQPBlock::generate_abstract_constraints( Configuration * stcc )
 
  add_static_constraint( v_eq , "eq" );
  add_static_constraint( v_in , "ineq" );
+ add_dynamic_constraint( v_link , "link" );
 
  AR |= HasCns;
 
@@ -418,17 +538,18 @@ void HQPBlock::generate_objective( Configuration * objc )
  DQuadFunction::v_coeff_triple t;
  t.reserve( f_n + v_v.size() + v_w.size() );
  for( Index j = 0 ; j < f_n ; ++j )
-  t.emplace_back( & v_x[ j ] ,
-                  v_center.empty() ? 0.0 : - f_eps * v_center[ j ] ,
-                  f_eps / 2 );
+  t.emplace_back( & v_x[ j ] , v_center.empty() ? 0.0 :
+                  - f_scale * f_eps * reg_weight( j ) * v_center[ j ] ,
+                  f_scale * f_eps * reg_weight( j ) / 2 );
  for( Index p = 0 ; p < get_num_levels() ; ++p )
   for( Index i = v_eq_start[ p ] ; i < v_eq_start[ p + 1 ] ; ++i )
-   t.emplace_back( & v_v[ i ] , 0.0 , v_lvl_obj[ p ] ? 0.5 : 0.0 );
+   t.emplace_back( & v_v[ i ] , 0.0 , v_lvl_obj[ p ] ? f_scale / 2 : 0.0 );
  for( Index p = 0 ; p < get_num_levels() ; ++p )
   for( Index i = v_in_start[ p ] ; i < v_in_start[ p + 1 ] ; ++i )
-   t.emplace_back( & v_w[ i ] , 0.0 , v_lvl_obj[ p ] ? 0.5 : 0.0 );
+   t.emplace_back( & v_w[ i ] , 0.0 , v_lvl_obj[ p ] ? f_scale / 2 : 0.0 );
 
- f_obj.set_function( new DQuadFunction( std::move( t ) ) , eNoMod );
+ f_obj.set_function( new DQuadFunction( std::move( t ) , reg_constant() ) ,
+                     eNoMod );
  f_obj.set_sense( Objective::eMin , eNoMod );
  set_objective( & f_obj , eNoMod );
 
@@ -516,6 +637,83 @@ double HQPBlock::level_slacks( Index p , Vec_double & v ,
  }  // end( HQPBlock::level_slacks )
 
 /*--------------------------------------------------------------------------*/
+
+void HQPBlock::refix_level( Index p , ModParam issueMod )
+{
+ check_level( p , "refix_level" );
+ if( v_lvl_state[ p ] != kFixed )
+  throw( std::logic_error( "HQPBlock::refix_level: level " +
+                           std::to_string( p ) + " is not fixed" ) );
+
+ Vec_double v , w;
+ level_slacks( p , v , w );
+
+ auto refix = [ & ]( ColVariable & var , double val ) {
+  if( var.get_value() == val )
+   return;
+  var.is_fixed( false , issueMod );
+  var.set_value( val );
+  var.is_fixed( true , issueMod );
+  };
+
+ for( Index h = 0 ; h < get_num_eq_rows( p ) ; ++h )
+  refix( v_v[ v_eq_start[ p ] + h ] , v[ h ] );
+ for( Index h = 0 ; h < get_num_ineq_rows( p ) ; ++h ) {
+  auto & var = v_w[ v_in_start[ p ] + h ];
+  refix( var , std::max( var.get_value() , w[ h ] ) );
+  }
+ }  // end( HQPBlock::refix_level )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::get_x_values( Vec_double & x ) const
+{
+ x.resize( v_x.size() );
+ for( Index j = 0 ; j < v_x.size() ; ++j )
+  x[ j ] = v_x[ j ].get_value();
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_x_values( const Vec_double & x )
+{
+ if( x.size() != v_x.size() )
+  throw( std::invalid_argument( "HQPBlock::set_x_values: wrong size" ) );
+ for( Index j = 0 ; j < v_x.size() ; ++j )
+  v_x[ j ].set_value( x[ j ] );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_slack_values( Index p , const Vec_double & v ,
+                                 const Vec_double & w )
+{
+ check_level( p , "set_slack_values" );
+ if( ( v.size() != get_num_eq_rows( p ) ) ||
+     ( w.size() != get_num_ineq_rows( p ) ) )
+  throw( std::invalid_argument( "HQPBlock::set_slack_values: wrong "
+                                "size" ) );
+ if( ! ( AR & HasVar ) )
+  return;
+ for( Index h = 0 ; h < v.size() ; ++h )
+  v_v[ v_eq_start[ p ] + h ].set_value( v[ h ] );
+ for( Index h = 0 ; h < w.size() ; ++h )
+  v_w[ v_in_start[ p ] + h ].set_value( w[ h ] );
+ }
+
+/*--------------------------------------------------------------------------*/
+/*----------------------- Methods for handling Solution --------------------*/
+/*--------------------------------------------------------------------------*/
+
+Solution * HQPBlock::get_Solution( Configuration * solc , bool emptys )
+{
+ auto sol = new ColVariableSolution;
+ if( ! emptys )
+  sol->read( this );
+ return( sol );
+ }
+
+/*--------------------------------------------------------------------------*/
 /*-------------------------- Methods for changing data ---------------------*/
 /*--------------------------------------------------------------------------*/
 
@@ -601,13 +799,18 @@ void HQPBlock::set_regularization( double eps , ModParam issueMod )
  if( ! ( AR & HasObj ) )
   return;
 
- DQuadFunction::v_coeff quad( f_n , f_eps / 2 ) , lin( f_n , 0 );
- if( ! v_center.empty() )
-  for( Index j = 0 ; j < f_n ; ++j )
-   lin[ j ] = - f_eps * v_center[ j ];
+ DQuadFunction::v_coeff quad( f_n ) , lin( f_n , 0 );
+ for( Index j = 0 ; j < f_n ; ++j ) {
+  quad[ j ] = f_scale * f_eps * reg_weight( j ) / 2;
+  if( ! v_center.empty() )
+   lin[ j ] = - f_scale * f_eps * reg_weight( j ) * v_center[ j ];
+  }
  static_cast< DQuadFunction * >( f_obj.get_function() )->modify_terms(
        quad.cbegin() , lin.cbegin() , DQuadFunction::Range( 0 , f_n ) ,
        issueMod );
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ if( f->get_constant_term() != reg_constant() )
+  f->set_constant_term( reg_constant() , issueMod );
 
  }  // end( HQPBlock::set_regularization )
 
@@ -625,12 +828,61 @@ void HQPBlock::set_center( const Vec_double & c , ModParam issueMod )
  DQuadFunction::v_coeff lin( f_n , 0 );
  if( ! v_center.empty() )
   for( Index j = 0 ; j < f_n ; ++j )
-   lin[ j ] = - f_eps * v_center[ j ];
- static_cast< DQuadFunction * >( f_obj.get_function() )->
-  modify_linear_coefficients( std::move( lin ) ,
-                              DQuadFunction::Range( 0 , f_n ) , issueMod );
+   lin[ j ] = - f_scale * f_eps * reg_weight( j ) * v_center[ j ];
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ f->modify_linear_coefficients( std::move( lin ) ,
+                                DQuadFunction::Range( 0 , f_n ) , issueMod );
+ if( f->get_constant_term() != reg_constant() )
+  f->set_constant_term( reg_constant() , issueMod );
 
  }  // end( HQPBlock::set_center )
+
+/*--------------------------------------------------------------------------*/
+
+double HQPBlock::reg_constant( void ) const
+{
+ double c2 = 0;
+ for( Index j = 0 ; j < v_center.size() ; ++j )
+  c2 += reg_weight( j ) * v_center[ j ] * v_center[ j ];
+ return( f_scale * f_eps * c2 / 2 );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_objective_scale( double s , ModParam issueMod )
+{
+ if( ! ( s > 0 ) || ( s == Inf< double >() ) )
+  throw( std::invalid_argument( "HQPBlock::set_objective_scale: the scale "
+                                "is not finite and positive" ) );
+ if( s == f_scale )
+  return;
+
+ f_scale = s;
+ if( ! ( AR & HasObj ) )
+  return;
+
+ // all the terms at once: x, then the slacks of each kind by level
+ const Index ne = v_b.size() , ni = v_d.size();
+ DQuadFunction::v_coeff quad( f_n + ne + ni , 0 ) , lin( f_n + ne + ni , 0 );
+ for( Index j = 0 ; j < f_n ; ++j ) {
+  quad[ j ] = f_scale * f_eps * reg_weight( j ) / 2;
+  if( ! v_center.empty() )
+   lin[ j ] = - f_scale * f_eps * reg_weight( j ) * v_center[ j ];
+  }
+ for( Index p = 0 ; p < get_num_levels() ; ++p ) {
+  const double q = v_lvl_obj[ p ] ? f_scale / 2 : 0.0;
+  for( Index i = v_eq_start[ p ] ; i < v_eq_start[ p + 1 ] ; ++i )
+   quad[ f_n + i ] = q;
+  for( Index i = v_in_start[ p ] ; i < v_in_start[ p + 1 ] ; ++i )
+   quad[ f_n + ne + i ] = q;
+  }
+ auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
+ f->modify_terms( quad.cbegin() , lin.cbegin() ,
+                  DQuadFunction::Range( 0 , f_n + ne + ni ) , issueMod );
+ if( f->get_constant_term() != reg_constant() )
+  f->set_constant_term( reg_constant() , issueMod );
+
+ }  // end( HQPBlock::set_objective_scale )
 
 /*--------------------------------------------------------------------------*/
 /*---------------------------- Methods for printing ------------------------*/
@@ -640,6 +892,17 @@ void HQPBlock::print( std::ostream & output , char vlvl ) const
 {
  output << "HQPBlock with " << f_n << " variables and " << get_num_levels()
         << " levels, regularization " << f_eps << std::endl;
+ if( f_stages.num_stages ) {
+  output << " " << f_stages.num_stages << " stages, the dynamics at level "
+	 << f_stages.dynamics_level << std::endl;
+  if( vlvl > 0 ) {
+   output << "  stage of each column (s state, u input):";
+   for( Index j = 0 ; j < f_n ; ++j )
+    output << " " << ( f_stages.var_state[ j ] ? "s" : "u" )
+	   << f_stages.var_stage[ j ];
+   output << std::endl;
+   }
+  }
  for( Index p = 0 ; p < get_num_levels() ; ++p ) {
   output << " level " << p << ": " << get_num_eq_rows( p )
          << " equality rows, " << get_num_ineq_rows( p )
@@ -672,14 +935,18 @@ void HQPBlock::guts_of_destructor( void )
   row.clear();
  for( auto & row : v_in )
   row.clear();
+ for( auto & row : v_link )
+  row.clear();
  f_obj.clear();
 
  reset_static_constraints();
+ reset_dynamic_constraints();
  reset_static_variables();
  reset_objective();
 
  v_eq.clear();
  v_in.clear();
+ v_link.clear();
  v_cols.clear();
  v_x.clear();
  v_v.clear();
@@ -827,7 +1094,7 @@ void HQPBlock::set_level_in_objective( Index p , bool in , ModParam issueMod )
   return;
 
  auto f = static_cast< DQuadFunction * >( f_obj.get_function() );
- const double q = in ? 0.5 : 0.0;
+ const double q = in ? f_scale / 2 : 0.0;
  const Index ne = v_b.size();
  for( int k = 0 ; k < 2 ; ++k ) {
   const Index start = f_n + ( k ? ne + v_in_start[ p ] : v_eq_start[ p ] );

@@ -27,11 +27,14 @@
 
 # macros to be exported - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-HQPBkOBJ = $(HQPBkSDR)/obj/HQPBlock.o $(HQPBkSDR)/obj/HQPSolver.o
+HQPBkOBJ = $(HQPBkSDR)/obj/HQPBlock.o $(HQPBkSDR)/obj/HQPDistBlock.o \
+	$(HQPBkSDR)/obj/HQPSolver.o $(HQPBkSDR)/obj/HQPStageSolver.o
 
 HQPBkINC = -I$(HQPBkSDR)/include
 
-HQPBkH   = $(HQPBkSDR)/include/HQPBlock.h $(HQPBkSDR)/include/HQPSolver.h
+HQPBkH   = $(HQPBkSDR)/include/HQPBlock.h \
+	$(HQPBkSDR)/include/HQPDistBlock.h $(HQPBkSDR)/include/HQPSolver.h \
+	$(HQPBkSDR)/include/HQPStageSolver.h
 
 # the C++20 module [see makefile-mod of SMS++] - - - - - - - - - - - - - - -
 # the prefixes of the modules of the dependencies (e.g., UCBck) go in place
@@ -52,10 +55,22 @@ $(HQPBkSDR)/obj/HQPBlock.o: $(HQPBkSDR)/src/HQPBlock.cpp \
 	$(CC) -c $(HQPBkSDR)/src/HQPBlock.cpp -o $@ \
 	$(HQPBkINC) $(SMS++INC) $(SW)
 
+$(HQPBkSDR)/obj/HQPDistBlock.o: $(HQPBkSDR)/src/HQPDistBlock.cpp \
+	$(HQPBkSDR)/include/HQPDistBlock.h $(HQPBkSDR)/include/HQPBlock.h \
+	$(SMS++H) $(SMS++OBJ)
+	$(CC) -c $(HQPBkSDR)/src/HQPDistBlock.cpp -o $@ \
+	$(HQPBkINC) $(SMS++INC) $(SW)
+
 $(HQPBkSDR)/obj/HQPSolver.o: $(HQPBkSDR)/src/HQPSolver.cpp \
 	$(HQPBkSDR)/include/HQPSolver.h $(HQPBkSDR)/include/HQPBlock.h \
 	$(SMS++H) $(SMS++OBJ)
 	$(CC) -c $(HQPBkSDR)/src/HQPSolver.cpp -o $@ \
+	$(HQPBkINC) $(SMS++INC) $(SW)
+
+$(HQPBkSDR)/obj/HQPStageSolver.o: $(HQPBkSDR)/src/HQPStageSolver.cpp \
+	$(HQPBkSDR)/include/HQPStageSolver.h $(HQPBkSDR)/include/HQPBlock.h \
+	$(SMS++H) $(SMS++OBJ)
+	$(CC) -c $(HQPBkSDR)/src/HQPStageSolver.cpp -o $@ \
 	$(HQPBkINC) $(SMS++INC) $(SW)
 
 ########################## End of makefile ###################################

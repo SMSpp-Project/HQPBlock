@@ -57,6 +57,117 @@ namespace SMSpp_di_unipi_it
  *  @{ */
 
 /*--------------------------------------------------------------------------*/
+/*-------------------------- CLASS HQPLevelBlock ---------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the levels of a hierarchical QP, whatever Block holds them
+/** The HQPLevelBlock class is the interface through which a Solver of a
+ * hierarchical (lexicographic) Quadratic Program [see HQPSolver] moves a
+ * Block from a level to the next one and reads and writes its solution,
+ * whatever the Block is: the HQPBlock, which is the whole hierarchy, and
+ * the HQPDistBlock, where it is split among sub-Blocks. All is in terms of
+ * the \f$ n \f$ variables \f$ x \f$ and of the slacks of the hierarchy [see
+ * HQPBlock], whatever the abstract representation that holds them. */
+
+class HQPLevelBlock : public Block
+{
+/*----------------------- PUBLIC PART OF THE CLASS -------------------------*/
+
+ public:
+
+/*---------------------------- PUBLIC TYPES --------------------------------*/
+
+ using Vec_double = std::vector< double >;  ///< a vector of double
+
+/*------------------------------ CONSTRUCTOR -------------------------------*/
+ /// constructor of HQPLevelBlock, taking a pointer to the father Block
+
+ explicit HQPLevelBlock( Block * father = nullptr ) : Block( father ) {}
+
+/*------------------------------ DESTRUCTOR --------------------------------*/
+ /// destructor of HQPLevelBlock, does nothing
+
+ virtual ~HQPLevelBlock() = default;
+
+/*------------------------ Methods for the levels --------------------------*/
+ /// returns the number \f$ n \f$ of variables
+
+ [[nodiscard]] virtual Index get_num_var( void ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the number \f$ P \f$ of levels
+
+ [[nodiscard]] virtual Index get_num_levels( void ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// brings the abstract representation to the problem of level 0
+ /** Brings the abstract representation to the problem of level 0, the rows
+  * of the other levels relaxed if \p relax_lower [see
+  * HQPBlock::reset_levels()]. */
+
+ virtual void reset_levels( bool relax_lower = false ,
+                            ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// moves the abstract representation from level p to level p + 1
+ /** Moves the abstract representation from the current level p to level
+  * p + 1, the slacks of level p being fixed at their values at the current
+  * \f$ x \f$ plus \p tol on the inequality ones [see
+  * HQPBlock::next_level()]. */
+
+ virtual void next_level( double tol = 0 , ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// computes the slacks of level p at the current \f$ x \f$
+ /** Writes in \p v and \p w the slacks of level p at the current \f$ x \f$
+  * [see get_x_values()] and returns the value \f$ \|v\|^2 / 2 + \|w\|^2 /
+  * 2 \f$ of level p there [see HQPBlock::level_slacks()]. */
+
+ virtual double level_slacks( Index p , Vec_double & v ,
+                              Vec_double & w ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the center \f$ c \f$ of the regularization (empty means 0)
+
+ virtual void set_center( const Vec_double & c ,
+                          ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// multiplies the whole Objective by \p s > 0
+ /** Multiplies the whole Objective (the slacks, the regularization and its
+  * constant) by \p s, which changes no minimizer of any level and only the
+  * scale of its value, e.g., for an inner Solver whose tolerances are
+  * absolute to see a level of value about 1 [see HQPSolver]; the values of
+  * the levels [see level_slacks()] are not scaled. */
+
+ virtual void set_objective_scale( double s ,
+                                   ModParam issueMod = eModBlck ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes in \p x the current values of the \f$ n \f$ variables
+
+ virtual void get_x_values( Vec_double & x ) const = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes \p x in the ColVariable of the \f$ n \f$ variables
+ /** Writes \p x, of size \f$ n \f$, in the ColVariable that hold the \f$ n
+  * \f$ variables, issuing no Modification. */
+
+ virtual void set_x_values( const Vec_double & x ) = 0;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes the slacks of level p in their ColVariable
+ /** Writes \p v and \p w, of sizes \f$ m_p \f$ and \f$ l_p \f$, in the
+  * ColVariable of the slacks of level p, issuing no Modification; a fixed
+  * slack keeps the value it is fixed at [see ColVariable::set_value()]. */
+
+ virtual void set_slack_values( Index p , const Vec_double & v ,
+                                const Vec_double & w ) = 0;
+
+/*--------------------------------------------------------------------------*/
+
+ };  // end( class( HQPLevelBlock ) )
+
+/*--------------------------------------------------------------------------*/
 /*----------------------------- CLASS HQPBlock -----------------------------*/
 /*--------------------------------------------------------------------------*/
 /// implementation of the Block concept for a hierarchical QP
@@ -81,14 +192,17 @@ namespace SMSpp_di_unipi_it
  *
  * \f[
  *   (L_p) \qquad \min \Big\{ \, \tfrac{1}{2} \| v_p \|^2 +
- *         \tfrac{1}{2} \| w_p \|^2 + \tfrac{\varepsilon}{2} \| x - c \|^2
- *         \;:\; v_q = v^*_q \,,\, w_q = w^*_q \;\; q < p \,,\;
- *         \mbox{the rows of all the levels} \, \Big\} \;\;,
+ *         \tfrac{1}{2} \| w_p \|^2 + \tfrac{\varepsilon}{2} \sum_j r_j
+ *         ( x_j - c_j )^2 \;:\; v_q = v^*_q \,,\, w_q = w^*_q \;\; q < p
+ *         \,,\; \mbox{the rows of all the levels} \, \Big\} \;\;,
  * \f]
  *
- * where \f$ \varepsilon \geq 0 \f$ is a regularization weight and \f$ c
- * \f$ its center (0 if not given), which a Solver can move, e.g., to the
- * solution of the previous level, to get a proximal term. Fixing \f$ v_q \f$
+ * where \f$ \varepsilon \geq 0 \f$ is a regularization weight, \f$ r_j
+ * > 0 \f$ that of variable j (1 if not given, e.g., less than 1 for a
+ * variable that is one of several copies of the same one, as in an
+ * HQPDistBlock) and \f$ c \f$ the center (0 if not given), which a Solver
+ * can move, e.g., to the solution of the previous level, to get a proximal
+ * term. Fixing \f$ v_q \f$
  * keeps \f$ A_q x \f$ at its optimal value, i.e., an equality task of a
  * higher level keeps its optimal residual, while fixing \f$ w_q \f$ gives
  * \f$ W^i_q ( C_q x - d_q ) \leq w^*_q \f$, i.e., an inequality task of a
@@ -146,9 +260,18 @@ namespace SMSpp_di_unipi_it
  *
  * Only the data is serialized [see deserialize()]: the current level, the
  * fixed slacks and the center of the regularization are a state of the
- * solution process, not of the model. */
+ * solution process, not of the model.
+ *
+ * The HQPBlock can also carry, optionally, the stage structure of an
+ * optimal control problem over \f$ N \f$ stages [see StageData]: the stage
+ * \f$ k \f$ of each column, and whether it is a component of the input
+ * \f$ u_k \f$ (\f$ k < N \f$) or of the state \f$ s_k \f$ (\f$ k \leq N
+ * \f$), the stage of each row (optionally) and the level whose equality
+ * rows are the dynamics \f$ s_{k+1} = A_k s_k + B_k u_k + c_k \f$. The
+ * HQPBlock does nothing with them but keep and serialize them, for a Solver
+ * that exploits them [see HQPStageSolver]. */
 
-class HQPBlock : public Block
+class HQPBlock : public HQPLevelBlock
 {
 /*----------------------- PUBLIC PART OF THE CLASS -------------------------*/
 
@@ -159,13 +282,45 @@ class HQPBlock : public Block
  /// the row-major sparse matrix of the coefficients of a level
  using SparseMatrix = Eigen::SparseMatrix< double , Eigen::RowMajor >;
 
- using Vec_double = std::vector< double >;  ///< a vector of double
-
  /// the state of the slacks and of the rows of a level
  enum level_state {
   kFree = 0 ,  ///< the slacks are free and the rows enforced
   kFixed ,     ///< the slacks are fixed at their optimum, rows enforced
   kOff         ///< the slacks are fixed to 0 and the rows relaxed
+  };
+
+ /// the stage structure of the hierarchy, if any
+ /** The stage structure of an optimal control problem over \f$ N \f$
+  * stages, \f$ N \f$ = num_stages being 0 if there is none (and then all
+  * the rest empty):
+  *
+  * - var_stage[ j ] is the stage \f$ k \f$ of column j, and var_state[ j ]
+  *   is 1 if column j is a component of the state \f$ s_k \f$ (\f$ k \leq N
+  *   \f$), 0 if it is a component of the input \f$ u_k \f$ (\f$ k < N
+  *   \f$); both have size \f$ n \f$;
+  *
+  * - eq_stage[ i ] and ineq_stage[ i ] are the stages of the equality and
+  *   inequality rows of all the levels (in the order of get_b() and
+  *   get_d()), each less than \f$ N \f$; either may be empty, the stage of
+  *   a row being then the largest \f$ k \f$ such that the row has an entry
+  *   on \f$ u_k \f$ or on \f$ s_{k+1} \f$;
+  *
+  * - dynamics_level is the level whose equality rows are the dynamics, one
+  *   for each component of each \f$ s_{k+1} \f$, the row of which has an
+  *   entry on it and on no other component of \f$ s_{k+1} \f$, the others
+  *   being on \f$ s_k \f$ and \f$ u_k \f$. */
+
+ struct StageData
+ {
+  StageData( void ) : num_stages( 0 ) , dynamics_level( 0 ) { }
+  ///< constructor: no stage structure
+
+  Index num_stages;                 ///< the number N of stages, 0 for none
+  std::vector< Index > var_stage;   ///< the stage of each column
+  std::vector< Index > var_state;   ///< 1 if a column is a state, else 0
+  std::vector< Index > eq_stage;    ///< the stage of each equality row
+  std::vector< Index > ineq_stage;  ///< the stage of each inequality row
+  Index dynamics_level;             ///< the level of the dynamics
   };
 
 /*------------------------------ CONSTRUCTOR -------------------------------*/
@@ -177,7 +332,7 @@ class HQPBlock : public Block
   * called. */
 
  explicit HQPBlock( Block * father = nullptr )
-  : Block( father ) , f_n( 0 ) , f_eps( 0 ) , f_level( 0 ) ,
+  : HQPLevelBlock( father ) , f_n( 0 ) , f_eps( 0 ) , f_level( 0 ) ,
     f_relax_lower( false ) , AR( 0 ) {}
 
 /*------------------------------ DESTRUCTOR --------------------------------*/
@@ -201,7 +356,11 @@ class HQPBlock : public Block
   *   \f$; either vector may be empty, and so any of its elements, meaning
   *   all ones;
   *
-  * - eps is the weight \f$ \varepsilon \f$ of the regularization.
+  * - eps is the weight \f$ \varepsilon \f$ of the regularization, and rw
+  *   the weights \f$ r_j > 0 \f$ of the variables in it (empty meaning all
+  *   ones);
+  *
+  * - stages is the stage structure [see StageData], none by default.
   *
   * As the && tell, the vectors become property of the HQPBlock. If the
   * abstract representation is there already it is constructed anew, and an
@@ -209,11 +368,11 @@ class HQPBlock : public Block
   * agree. */
 
  void load( Index n , std::vector< SparseMatrix > && A ,
-            std::vector< Vec_double > && b ,
-            std::vector< SparseMatrix > && C ,
-            std::vector< Vec_double > && d ,
-            std::vector< Vec_double > && we = {} ,
-            std::vector< Vec_double > && wi = {} , double eps = 0 );
+	    std::vector< Vec_double > && b , std::vector< SparseMatrix > && C ,
+	    std::vector< Vec_double > && d ,
+	    std::vector< Vec_double > && we = {} ,
+	    std::vector< Vec_double > && wi = {} , double eps = 0 ,
+	    Vec_double && rw = {} , StageData && stages = {} );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// extends Block::deserialize( netCDF::NcGroup )
@@ -253,7 +412,21 @@ class HQPBlock : public Block
   *   the \f$ W^i_p \f$;
   *
   * - the scalar variable "Regularization" (netCDF::NcDouble), the weight
-  *   \f$ \varepsilon \f$, optional (0 if not there). */
+  *   \f$ \varepsilon \f$, optional (0 if not there);
+  *
+  * - the variable "RegularizationWeight" (netCDF::NcDouble, indexed over
+  *   "NumVar"), the weights \f$ r_j \f$, optional (all ones if not
+  *   there);
+  *
+  * - the dimension "NumStages", the number \f$ N \f$ of stages of the stage
+  *   structure [see StageData], optional (no stage structure if not there
+  *   or 0), and, if it is there, the variables "VarStage" and "VarState"
+  *   (netCDF::NcUint, indexed over "NumVar"), the stage of each column and
+  *   1 if it is a state, 0 if an input, both mandatory, "EqStage" and
+  *   "IneqStage" (netCDF::NcUint, indexed over "NumEqRows" and
+  *   "NumIneqRows"), the stage of each row, optional, and the scalar
+  *   variable "DynamicsLevel" (netCDF::NcUint), the level of the dynamics,
+  *   optional (0 if not there). */
 
  void deserialize( const netCDF::NcGroup & group ) override;
 
@@ -294,9 +467,10 @@ class HQPBlock : public Block
  /** Generates the FRealObjective, a minimization one whose DQuadFunction
   * has as active Variable \f$ x \f$, then \f$ v \f$, then \f$ w \f$, in the
   * order of generate_abstract_variables(); the coefficients (linear and
-  * quadratic) are those of the current level, i.e., \f$ ( - \varepsilon c ,
-  * \varepsilon / 2 ) \f$ for \f$ x \f$, \f$ ( 0 , 1 / 2 ) \f$ for the slacks
-  * in the Objective and \f$ ( 0 , 0 ) \f$ for the others. */
+  * quadratic) are those of the current level, i.e., \f$ ( - \varepsilon
+  * r_j c_j , \varepsilon r_j / 2 ) \f$ for \f$ x_j \f$, \f$ ( 0 , 1 / 2 )
+  * \f$ for the slacks in the Objective and \f$ ( 0 , 0 ) \f$ for the
+  * others. */
 
  void generate_objective( Configuration * objc = nullptr ) override;
 
@@ -311,12 +485,14 @@ class HQPBlock : public Block
 /*----------------------- Methods for reading the data ---------------------*/
  /// returns the number \f$ n \f$ of variables
 
- [[nodiscard]] Index get_num_var( void ) const { return( f_n ); }
+ [[nodiscard]] Index get_num_var( void ) const override { return( f_n ); }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number \f$ P \f$ of levels
 
- [[nodiscard]] Index get_num_levels( void ) const { return( v_A.size() ); }
+ [[nodiscard]] Index get_num_levels( void ) const override {
+  return( v_A.size() );
+  }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the number \f$ m_p \f$ of equality rows of level p
@@ -390,10 +566,64 @@ class HQPBlock : public Block
  [[nodiscard]] double get_regularization( void ) const { return( f_eps ); }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the weights \f$ r_j \f$ of the regularization (empty: all ones)
+
+ [[nodiscard]] const Vec_double & get_regularization_weights( void ) const {
+  return( v_rw );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// returns the center \f$ c \f$ of the regularization (empty means 0)
 
  [[nodiscard]] const Vec_double & get_center( void ) const {
   return( v_center );
+  }
+
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the factor of the whole Objective [see set_objective_scale()]
+
+ [[nodiscard]] double get_objective_scale( void ) const { return( f_scale ); }
+
+/*------------------- Methods for reading the stage data -------------------*/
+ /// returns the number \f$ N \f$ of stages, 0 if there is no stage data
+
+ [[nodiscard]] Index get_num_stages( void ) const {
+  return( f_stages.num_stages );
+  }
+
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the stage of each column (empty if there is no stage data)
+
+ [[nodiscard]] const std::vector< Index > & get_var_stage( void ) const {
+  return( f_stages.var_stage );
+  }
+
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns 1 for each column that is a state, 0 for an input
+
+ [[nodiscard]] const std::vector< Index > & get_var_state( void ) const {
+  return( f_stages.var_state );
+  }
+
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the stage of each equality row, as get_b() (empty: not given)
+
+ [[nodiscard]] const std::vector< Index > & get_eq_stage( void ) const {
+  return( f_stages.eq_stage );
+  }
+
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the stage of each inequality row, as get_d() (empty: not given)
+
+ [[nodiscard]] const std::vector< Index > & get_ineq_stage( void ) const {
+  return( f_stages.ineq_stage );
+  }
+
+ /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the level whose equality rows are the dynamics
+
+ [[nodiscard]] Index get_dynamics_level( void ) const {
+  return( f_stages.dynamics_level );
   }
 
 /*------------ Methods for reading the abstract representation -------------*/
@@ -432,6 +662,20 @@ class HQPBlock : public Block
   return( v_in );
   }
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// returns the rows of the dynamic group "link"
+ /** Returns the std::list of the FRowConstraint of the dynamic Constraint
+  * group "link" of the HQPBlock, which is there (empty) as soon as the
+  * Constraint are, and which the HQPBlock never changes: it is for an
+  * ancestor that links the HQPBlock with Variable of its own, e.g., an
+  * HQPDistBlock, which adds rows to it with Block::add_dynamic_constraints()
+  * and relaxes and enforces them itself. The levels have nothing to do with
+  * them. */
+
+ [[nodiscard]] std::list< FRowConstraint > & get_link_rows( void ) {
+  return( v_link );
+  }
+
 /*--------------------- Methods for handling the levels --------------------*/
  /// returns the current level
  /** Returns the level whose problem \f$ (L_p) \f$ the abstract
@@ -464,7 +708,7 @@ class HQPBlock : public Block
   * according to \p issueMod [see Observer::make_par()]. */
 
  void reset_levels( bool relax_lower = false ,
-                    ModParam issueMod = eModBlck );
+                    ModParam issueMod = eModBlck ) override;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// moves the abstract representation from level p to level p + 1
@@ -485,7 +729,7 @@ class HQPBlock : public Block
   * rows enforced, if they were relaxed) and they enter the Objective. The
   * changes are issued as Modification according to \p issueMod. */
 
- void next_level( double tol = 0 , ModParam issueMod = eModBlck );
+ void next_level( double tol = 0 , ModParam issueMod = eModBlck ) override;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// computes the slacks of level p at the current values of x
@@ -494,7 +738,38 @@ class HQPBlock : public Block
   * values of the ColVariable \f$ x \f$, and returns the value \f$ \|v\|^2 /
   * 2 + \|w\|^2 / 2 \f$ of level p there. */
 
- double level_slacks( Index p , Vec_double & v , Vec_double & w ) const;
+ double level_slacks( Index p , Vec_double & v ,
+                      Vec_double & w ) const override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// fixes again the slacks of a fixed level p at the current values of x
+ /** Fixes again the slacks of level p, which must be fixed [see
+  * level_state], at their values at the current values of the ColVariable
+  * \f$ x \f$ [see level_slacks()], but each \f$ w \f$ only if this is
+  * larger than the value it is fixed at, so that the current \f$ x \f$
+  * satisfies the rows of level p; e.g., after the values of some of the
+  * \f$ x \f$ have been changed from outside, as an HQPDistBlock does with
+  * the copies of the variables of other sub-Blocks. Only the slacks whose
+  * value changes are fixed again, by Modification according to \p
+  * issueMod. */
+
+ void refix_level( Index p , ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes in \p x the current values of the ColVariable \f$ x \f$
+
+ void get_x_values( Vec_double & x ) const override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes \p x in the ColVariable \f$ x \f$, issuing no Modification
+
+ void set_x_values( const Vec_double & x ) override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// writes the slacks of level p in their ColVariable, with no Modification
+
+ void set_slack_values( Index p , const Vec_double & v ,
+                        const Vec_double & w ) override;
 
 /*-------------------------- Methods for changing data ---------------------*/
  /// changes \f$ b_p \f$
@@ -549,15 +824,33 @@ class HQPBlock : public Block
  /** Changes the center \f$ c \f$ of the regularization into \p c, whose
   * size must be \f$ n \f$ (or 0, meaning \f$ c = 0 \f$): the linear
   * coefficients \f$ - \varepsilon c \f$ of \f$ x \f$ in the Objective change
-  * by Modification according to \p issueMod. The constant \f$ \varepsilon
-  * \| c \|^2 / 2 \f$ is not added to the Objective. */
+  * by Modification according to \p issueMod, and so does the constant
+  * \f$ \varepsilon \sum_j r_j c_j^2 / 2 \f$ of the Objective, which is
+  * therefore exactly that of \f$ (L_p) \f$, never negative. */
 
- void set_center( const Vec_double & c , ModParam issueMod = eModBlck );
+ void set_center( const Vec_double & c ,
+                  ModParam issueMod = eModBlck ) override;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// multiplies the whole Objective by \p s > 0 [see HQPLevelBlock]
+
+ void set_objective_scale( double s ,
+                           ModParam issueMod = eModBlck ) override;
+
+/*----------------------- Methods for handling Solution --------------------*/
+ /// returns a ColVariableSolution of the ColVariable of the HQPBlock
+ /** Returns a ColVariableSolution of all the ColVariable of the HQPBlock
+  * (\f$ x \f$ and the slacks), read from them if ! \p emptys; \p solc is
+  * ignored. */
+
+ Solution * get_Solution( Configuration * solc = nullptr ,
+                          bool emptys = true ) override;
 
 /*---------------------------- Methods for printing ------------------------*/
  /// prints the HQPBlock on an ostream with the given verbosity
- /** Prints the sizes of the HQPBlock and, if \p vlvl > 0, also its data,
-  * level by level. */
+ /** Prints the sizes of the HQPBlock and of its stage structure, if any,
+  * and, if \p vlvl > 0, also its data, level by level, and the stage of
+  * each column. */
 
  void print( std::ostream & output , char vlvl = 0 ) const override;
 
@@ -565,7 +858,8 @@ class HQPBlock : public Block
  /// extends Block::serialize( netCDF::NcGroup )
  /** Extends Block::serialize( netCDF::NcGroup ) to the specific format of
   * an HQPBlock [see deserialize()]. The weights are written only if one is
-  * not 1, the regularization only if it is not 0. */
+  * not 1, the regularization only if it is not 0, the stage structure only
+  * if there is one (the stages of the rows only if they were given). */
 
  void serialize( netCDF::NcGroup & group ) const override;
 
@@ -577,22 +871,68 @@ class HQPBlock : public Block
 
 /*-------------------------- PROTECTED METHODS -----------------------------*/
 
+ /// deletes the abstract representation, keeping the data
+
  void guts_of_destructor( void );
 
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// checks the data of load() and makes it the data of the HQPBlock
+ /** Checks the data of load() [see there], throwing std::invalid_argument
+  * if the sizes do not agree, deletes the abstract representation, if any,
+  * and makes the data that of the HQPBlock, whose levels are brought to the
+  * state of level 0; the abstract representation is not generated. */
+
  void guts_of_load( Index n , std::vector< SparseMatrix > && A ,
-                    std::vector< Vec_double > && b ,
-                    std::vector< SparseMatrix > && C ,
-                    std::vector< Vec_double > && d ,
-                    std::vector< Vec_double > && we ,
-                    std::vector< Vec_double > && wi , double eps );
+		    std::vector< Vec_double > && b ,
+		    std::vector< SparseMatrix > && C ,
+		    std::vector< Vec_double > && d ,
+		    std::vector< Vec_double > && we ,
+		    std::vector< Vec_double > && wi , double eps ,
+		    Vec_double && rw , StageData && stages );
+
+ /// the constant \f$ \varepsilon \sum_j r_j c_j^2 / 2 \f$ of the Objective
+
+ [[nodiscard]] double reg_constant( void ) const;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// the weight \f$ r_j \f$ of variable j in the regularization
+
+ [[nodiscard]] double reg_weight( Index j ) const {
+  return( v_rw.empty() ? 1.0 : v_rw[ j ] );
+  }
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// throws std::invalid_argument, naming method, if p is not a level
 
  void check_level( Index p , const char * method ) const;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// brings the rows of level p of one kind to the data
+ /** Brings the coefficients and the right-hand sides of the rows of level
+  * p, the equality ones if \p eq and the inequality ones otherwise, to the
+  * data of the HQPBlock, \p M (if not nullptr) becoming first the matrix of
+  * the level; only what changes is changed, by Modification according to
+  * \p issueMod. */
 
  void set_rows( bool eq , Index p , const SparseMatrix * M ,
                 ModParam issueMod );
 
+ /// brings the slacks and the rows of level p to the state s
+ /** Brings the slacks and the rows of level p to the state \p s [see
+  * level_state]: kFixed fixes the slacks at their values at the current x
+  * [see level_slacks()], \p tol being added to those of the inequality
+  * rows, kOff fixes them to 0 and relaxes the rows, kFree frees the slacks
+  * and enforces the rows; the changes are issued as Modification according
+  * to \p issueMod. */
+
  void set_level_state( Index p , level_state s , double tol ,
                        ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// puts the slacks of level p in the Objective (if in) or out of it
+ /** Gives the slacks of level p the quadratic coefficient 1 / 2 in the
+  * Objective if \p in, 0 otherwise, by Modification according to \p
+  * issueMod. */
 
  void set_level_in_objective( Index p , bool in , ModParam issueMod );
 
@@ -612,7 +952,11 @@ class HQPBlock : public Block
  std::vector< Index > v_in_start;   ///< first inequality row of each level
 
  double f_eps;                      ///< weight of the regularization
+ double f_scale = 1;                ///< factor of the whole Objective
+ Vec_double v_rw;                   ///< weights of the variables in it
  Vec_double v_center;               ///< center of the regularization
+
+ StageData f_stages;  ///< the stage structure, if any
 
  std::vector< ColVariable > v_x;    ///< the variables x
  std::vector< ColVariable > v_v;    ///< the slacks of the equality rows
@@ -620,6 +964,7 @@ class HQPBlock : public Block
 
  std::vector< FRowConstraint > v_eq;  ///< the equality rows
  std::vector< FRowConstraint > v_in;  ///< the inequality rows
+ std::list< FRowConstraint > v_link;  ///< the rows of the group "link"
 
  /// for each row, the columns of the active Variable of its LinearFunction
  /** For each row (the equality ones first, then the inequality ones), the

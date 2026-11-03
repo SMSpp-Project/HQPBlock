@@ -11,7 +11,8 @@ Quadratic Programs of task-priority control, e.g., in the Model Predictive
 Control of robots. Level p (p = 0 being the highest priority) has the tasks
 `we_p (A_p x - b_p) = v_p` and `wi_p (C_p x - d_p) <= w_p`, with `w_p >= 0`,
 and it minimizes `||v_p||^2 / 2 + ||w_p||^2 / 2` (plus, possibly, the
-regularization `eps ||x - c||^2 / 2`) keeping the slacks of the higher levels
+regularization `eps sum_j r_j (x_j - c_j)^2 / 2`, the weights `r_j` being 1
+if not given) keeping the slacks of the higher levels
 at their optimal values. Thus, an equality task of a higher level keeps its
 optimal residual, and an inequality task is never violated more than at its
 optimum.
@@ -28,39 +29,118 @@ the slacks of the level just solved and changes some coefficients of the
 Modification of the same Block, a Solver that can re-optimize (typically an
 active-set one) starts each solve from the previous solution.
 
-`HQPSolver` solves the levels of an `HQPBlock` one after the other with an
-inner Solver attached to the same Block. The inner Solver is any Solver of
-convex QPs with linear constraints (in practice a :MILPSolver, such as
-`DAQPMILPSolver` or `MOSEKMILPSolver`), taken from the factory by its name
-in the `BlockSolverConfig` given by the parameter `str_HQP_BSCfg`. With
-`int_HQP_Prox` the center of the regularization follows the solution of the
+`HQPSolver` solves the levels of an `HQPBlock` one after the other, each
+with an inner Solver of its own attached to the same Block, so that the
+inner Solver of a level starts from its solution of the same level in the
+previous step. The inner Solver is any Solver of convex QPs with linear
+constraints (in practice a :MILPSolver, such as `DAQPMILPSolver` or
+`MOSEKMILPSolver`), taken from the factory by its name in the
+`BlockSolverConfig` given by the parameter `strInnerBSC`. With
+`intProxCenter` the center of the regularization follows the solution of the
 previous level, and each level is then the problem of the null-space
-approach with a regularized step. With `int_HQP_RelaxLower` (the default)
+approach with a regularized step. With `intRelaxLower` (the default)
 the rows of the levels below the current one are relaxed and their slacks
 fixed to 0; this keeps the Hessian positive definite if `eps > 0`, while the
 rows left in the model with free slacks make it singular, which the inner
-Solvers handle rather less accurately.
+Solvers handle rather less accurately. With `intLevelScale` the `Objective`
+of each level is multiplied by the inverse of its value (that of the same
+level in the previous step, or of a first solve), which changes no
+minimizer and lets an inner Solver whose tolerances are absolute in
+practice (e.g., a decomposition, on levels of values of 1e-6) see a level
+of value about 1. All that `HQPSolver` uses of the Block is in the
+interface `HQPLevelBlock`, which `HQPBlock` implements and so does
+`HQPDistBlock`.
+
+`HQPDistBlock` is the same hierarchy with its variables split among owners,
+e.g., the robots of a multi-robot Model Predictive Control, so that it can
+be solved by decomposition, with one of two structures chosen by
+`set_structure()`. With `kConsensus`, the one of a Lagrangian decomposition,
+each row gets an owner among those of its columns, and each
+owner is a sub-Block, an `HQPBlock` with its own variables, a copy of each
+variable of another owner that appears in one of its rows, and its rows;
+the root has no variables, an empty `Objective` and the consensus rows that
+make each copy equal to the variable it copies. The regularization of a
+column is split among its copies, so that on the consensus the problem of
+each level is exactly that of the centralized hierarchy, which a Solver of
+the whole tree solves and a Lagrangian decomposition relaxes. Moving to the
+next level first gives the copies the values of their owners and fixes
+again the slacks of the levels already fixed at these values, so that every
+level is feasible whatever the accuracy of a decomposition. With `kBenders`,
+the one of a Benders decomposition, each owner has only its own variables
+and the rows all of whose entries are in them, while each coupling row is
+in the root, with its slack. Each variable of an equality coupling row has
+a copy `y` in the root, equal to it by a row of the dynamic group `link` of
+the sub-Block of its owner, and the `y` enter all the coupling rows; the
+other variables of an inequality coupling row enter it through a variable
+`t` for each owner, which bounds the part of the row in the variables of
+that owner by a row of `link`. Again, the problem of each level is exactly
+that of the centralized hierarchy, and moving to the next level puts the
+`y`, the `t` and the free slacks of the root at the solution of the
+previous one, where every row holds.
+
+An `HQPBlock` can also carry the stage structure of an optimal control
+problem over `N` stages (cf. `HQPBlock::StageData`): the stage `k` of each
+column and whether it is a component of the input `u_k` or of the state
+`s_k`, optionally the stage of each row, and the level whose equality rows
+are the dynamics `s_{k+1} = A_k s_k + B_k u_k + c_k`. `HQPStageSolver`
+solves one level of such an `HQPBlock`, e.g., as the inner Solver of each
+level of an `HQPSolver`: each row is written on its stage through the
+dynamics (with the previous input in the state, a row may also have entries
+on `s_k` and `u_{k-1}`), and the level is an optimal control problem with
+stage rows, which a primal active-set method solves starting from the
+current point (in a cascade, the solution of the previous level), each
+subproblem by a Riccati recursion with stage equalities and
+constraints-to-go, whose rank-revealing reductions allow dependent rows,
+in a time linear in `N`. It keeps its working set from a solve to the next
+one, e.g., the same level in the next step of a Model Predictive Control,
+and computes the dynamics again only when the coefficients of some row
+change. It needs only Eigen.
 
 An `HQPBlock` is serialized into and deserialized out of netCDF, with the
-rows in compressed sparse row form (cf. `HQPBlock::deserialize()`). The
+rows in compressed sparse row form and the stage structure, if any, in the
+dimension `NumStages` and the variables `VarStage`, `VarState`, `EqStage`,
+`IneqStage` and `DynamicsLevel` (cf. `HQPBlock::deserialize()`). The
 script `tools/npz2nc4.py` converts a hierarchy given as a `.npz` file (keys
 `A_<p>`, `b_<p>`, `C_<p>`, `d_<p>` and, optionally, `we_<p>`, `wi_<p>`) into
-that format. The instances of `data/nc4` are some steps of the radial
-switching scenario of a Python implementation of the centralized
-hierarchical Model Predictive Control of a team of robots, with the solution
-of each level of that implementation.
+that format, with the stage structure if the file has it (keys `n_stages`,
+`var_stage`, `var_state` and, optionally, `eq_stage`, `ineq_stage`,
+`dynamics_level`). An
+`HQPDistBlock` is the owners of the columns (and, optionally, of the rows)
+together with the centralized `HQPBlock` in a group of its own (cf.
+`HQPDistBlock::deserialize()`). The instances of `data/nc4` are some steps
+of the radial switching scenario of the centralized hierarchical Model
+Predictive Control of a team of robots of the
+[HO-MPC package](https://github.com/ddebenedittis/hierarchical_optimization_mpc)
+(D. De Benedittis, M. Garabini, L. Pallottino, "Managing Conflicting Tasks
+in Heterogeneous Multi-Robot Systems Through Hierarchical Optimization",
+IEEE Robotics and Automation Letters 10(6):5305-5312, 2025), with the
+solution of each level of that implementation, written by
+`tools/ho_mpc_radial.py` with the package and converted by
+`tools/npz2nc4.py`: those of the control horizon 3 without the stage
+structure, those of the control horizons 10, 20 and 50 (one of them with
+the avoidance of the collisions at every stage) with it.
 
-The tester `test/test.cpp` compares each `HQPSolver` of `test/BSPar.txt`
-with an independent implementation of the null-space approach, level by
-level. The inner Solvers are DAQP and MOSEK, with the rows of the lower
-levels relaxed or not and the center of the regularization moving or not.
-The hierarchies are random ones and those that may be degenerate: a level of
-equalities only, one of inequalities only, an empty one, an inequality task
-that cannot be satisfied at its level, one already satisfied, dependent rows
-and weights. The tester also checks a change of all the data between two
-solves (against a new Block solved from scratch) and the netCDF format,
-while `test/test_radial.cpp` does the same on the instances of `data/nc4`,
-also reaching each step by Modification of the Block of the previous one.
+The unit test `test/test.cpp` needs the core library only. It checks the
+methods of the Block (the sizes of the levels, the
+abstract representation, the move from a level to the next one, the changes
+of the data and the Modification they issue), the netCDF format and the
+errors of the reader, on hierarchies with the degenerate parts of the format
+(levels with no equalities or no inequalities, empty levels, rows with no
+entries, weights different from 1), and those of `HQPDistBlock` (the owners
+of the rows, the copies and the consensus rows, the slacks fixed again,
+the changes of the data in and out of the pattern of a row), the stage
+structure, the Riccati recursion of `HQPStageSolver` against the dense KKT
+system on random problems with dependent rows, and `HQPStageSolver` on
+hierarchies whose values are known and, given instance files, on the
+instances of `data/nc4` with the stage structure against their
+solution. `HQPSolver`,
+whose inner Solver comes
+from another module, is tested by the suite
+[`HQPBlock`](https://gitlab.com/smspp/tests/-/tree/develop/HQPBlock) of the
+system tests of SMS++, which compares several inner Solvers and settings,
+on the `HQPBlock` and on the `HQPDistBlock` of the same hierarchies, with an
+independent implementation of the null-space approach, on random and
+degenerate hierarchies and on the instances of `data/nc4`.
 
 
 ## Getting started
@@ -68,15 +148,20 @@ also reaching each step by Modification of the Block of the previous one.
 These instructions will let you build the `HQPBlock` module on
 your system.
 
+The channels that distribute SMS++ are listed in its [installation
+guide](https://gitlab.com/smspp/smspp-project/-/wikis/Installing-SMS++); what
+follows is about building the module yourself.
+
 ### Requirements
 
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
   requirements.
-- For the tests, [MILPSolver](https://gitlab.com/smspp/milpsolver), which
-  provides the inner Solver of `HQPSolver`; without it the testers check
-  only what needs no inner Solver. The instances of `data/nc4` are
-  downloaded by the tests from the GitLab Package Registry.
-- For the tools, Python with numpy and netCDF4 (`tools/npz2nc4.py`).
+- To use `HQPSolver`, a module providing its inner Solver, typically
+  [MILPSolver](https://gitlab.com/smspp/milpsolver). The instances of
+  `data/nc4` are downloaded from the GitLab Package Registry by the system
+  tests that read them.
+- For the tools, Python with numpy and netCDF4 (`tools/npz2nc4.py`), and
+  the HO-MPC package with its requirements (`tools/ho_mpc_radial.py`).
 
 ### Build and install with CMake
 

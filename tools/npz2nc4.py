@@ -11,7 +11,12 @@
 #    dense or as 0-row matrices for a level with no task of that kind (a      #
 #    missing key is taken as empty), and optionally we_<p>, wi_<p> (a scalar  #
 #    or a vector, all ones if missing); the number of levels is n_levels if   #
-#    there, the number of the A_<p> otherwise. The output is an eBlockFile    #
+#    there, the number of the A_<p> otherwise. With n_stages > 0, the .npz    #
+#    also holds the stage structure: var_stage and var_state, the stage of    #
+#    each column and 1 for a state, 0 for an input, optionally eq_stage and   #
+#    ineq_stage, the stage of each row of each kind of all the levels, and    #
+#    dynamics_level, the level of the dynamics (0 if missing) [see            #
+#    HQPBlock::StageData]. The output is an eBlockFile                        #
 #    whose Block_0 is the HQPBlock [see HQPBlock::deserialize()], with the    #
 #    regularization of --eps. If the .npz has xref_<p>, the solution after    #
 #    level p of some other code, they go in the variable X (NumLevels x       #
@@ -90,6 +95,25 @@ def write_rows(g, pfx, mats, rhs, wgh, levels):
         g.createVariable(f'{pfx}Weight', 'f8', (f'Num{pfx}Rows',))[:] = w
 
 
+def write_stages(g, npz):
+    """the stage structure, as HQPBlock::deserialize() reads it"""
+    g.createDimension('NumStages', int(npz['n_stages']))
+    for key, var, dim in (('var_stage', 'VarStage', 'NumVar'),
+                          ('var_state', 'VarState', 'NumVar'),
+                          ('eq_stage', 'EqStage', 'NumEqRows'),
+                          ('ineq_stage', 'IneqStage', 'NumIneqRows')):
+        if key not in npz:
+            if key.startswith('var'):
+                raise ValueError(f'{key} is missing')
+            continue
+        v = np.asarray(npz[key], dtype=np.uint32).flatten()
+        if dim not in g.dimensions or v.size != g.dimensions[dim].size:
+            raise ValueError(f'{key} has not one entry for each of {dim}')
+        g.createVariable(var, 'u4', (dim,))[:] = v
+    g.createVariable('DynamicsLevel', 'u4')[...] = \
+        int(npz.get('dynamics_level', 0))
+
+
 def main():
     ap = argparse.ArgumentParser(description='hierarchical QP from .npz '
                                  'to the netCDF format of HQPBlock')
@@ -130,6 +154,8 @@ def main():
         write_rows(g, 'Ineq', C, d, wi, P)
         if a.eps != 0:
             g.createVariable('Regularization', 'f8')[...] = a.eps
+        if int(npz.get('n_stages', 0)) > 0:
+            write_stages(g, npz)
         if all(f'xref_{p}' in npz for p in range(P)):
             r = f.createGroup('HQPReference')
             r.createDimension('NumLevels', P)

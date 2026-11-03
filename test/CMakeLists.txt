@@ -29,24 +29,10 @@ else ()
     endif ()
 endif ()
 
-# ----- Inner Solver -------------------------------------------------------- #
-# The HQPSolver of the testers take their inner Solver from the factory, by
-# the names in the configurations of this directory: MILPSolver provides
-# them. In the umbrella it is a target (or will be, coming after this
-# module), alone it is looked for among the installed packages; without it
-# the testers check only what needs no inner Solver.
-if (NOT (TARGET ${modNamespace}::MILPSolver OR BUILD_MILPSolver))
-    find_package(MILPSolver QUIET)
-endif ()
-
 # ----- HQPBlock_unit_test -------------------------------------------------- #
 
 add_executable(${modName}_unit_test test.cpp)
 target_link_libraries(${modName}_unit_test PRIVATE ${modNamespace}::${modName})
-if (TARGET ${modNamespace}::MILPSolver OR BUILD_MILPSolver)
-    target_link_libraries(${modName}_unit_test PRIVATE
-                          ${modNamespace}::MILPSolver)
-endif ()
 
 if (WIN32 AND BUILD_SHARED_LIBS AND NOT DEFINED ENV{CONDA_BUILD})
     # On Windows with shared libraries enabled copies all runtime DLL
@@ -58,6 +44,14 @@ if (WIN32 AND BUILD_SHARED_LIBS AND NOT DEFINED ENV{CONDA_BUILD})
             $<TARGET_FILE_DIR:${modName}_unit_test>
             COMMAND_EXPAND_LISTS
             COMMENT "Copying runtime DLLs next to ${modName}_unit_test.exe")
+    # one link at a time, since two copies of the same DLL into a
+    # directory collide, and Ninja links in parallel
+    get_property(_pools GLOBAL PROPERTY JOB_POOLS)
+    if (NOT _pools MATCHES "smspp_runtime_dlls=")
+        set_property(GLOBAL APPEND PROPERTY JOB_POOLS smspp_runtime_dlls=1)
+    endif ()
+    set_property(TARGET ${modName}_unit_test
+                 PROPERTY JOB_POOL_LINK smspp_runtime_dlls)
 endif ()
 
 add_test(NAME ${modName}_unit_test
@@ -69,33 +63,36 @@ add_test(NAME ${modName}_unit_test
 # umbrella for the system-tests counterpart).
 set_tests_properties(${modName}_unit_test PROPERTIES LABELS "${modName}")
 
-# ----- HQPBlock_radial_test ------------------------------------------------ #
-# The hierarchical QPs of data/nc4, extracted by a test that sets up the
-# fixture hqp_nc4_extracted [see the section Data of CMakeLists.txt].
+# HQPStageSolver on the instances of data/nc4 with the stage structure (two
+# of them are in the system tests too), against the solution of each
+# level that they carry, once the instances are downloaded and extracted
+# [see the CMakeLists.txt of the module]; the lock is shared by the tests
+# that build a target of the data of the module
+add_test(NAME ${modName}_extract_nc4
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+                 --target extract_${DATA_PREFIX}_nc4)
+set_tests_properties(${modName}_extract_nc4 PROPERTIES
+                     FIXTURES_SETUP ${modName}_nc4
+                     RESOURCE_LOCK ${DATA_PREFIX}_data
+                     LABELS "${modName}")
 
-add_executable(${modName}_radial_test test_radial.cpp)
-target_link_libraries(${modName}_radial_test PRIVATE
-                      ${modNamespace}::${modName})
-if (TARGET ${modNamespace}::MILPSolver OR BUILD_MILPSolver)
-    target_link_libraries(${modName}_radial_test PRIVATE
-                          ${modNamespace}::MILPSolver)
-endif ()
-
-add_test(NAME ${modName}_radial_test
-         COMMAND ${modName}_radial_test ${PROJECT_SOURCE_DIR}/data/nc4
+add_test(NAME ${modName}_unit_test_radial
+         COMMAND ${modName}_unit_test
+                 ../data/nc4/radial8_N010_s000.nc4
+                 ../data/nc4/radial8_N010_s001.nc4
+                 ../data/nc4/radial8_N010_s002.nc4
+                 ../data/nc4/radial8_N010_s085.nc4
+                 ../data/nc4/radial8_N010_s086.nc4
+                 ../data/nc4/radial8_N020_s000.nc4
+                 ../data/nc4/radial8_N020_s001.nc4
+                 ../data/nc4/radial8_N020_s002.nc4
+                 ../data/nc4/radial8_N020c_s000.nc4
+                 ../data/nc4/radial8_N020c_s001.nc4
+                 ../data/nc4/radial8_N020c_s002.nc4
+                 ../data/nc4/radial8_N050_s000.nc4
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-set_tests_properties(${modName}_radial_test PROPERTIES
-                     LABELS "${modName}" SKIP_RETURN_CODE 77
-                     FIXTURES_REQUIRED hqp_nc4_extracted)
-
-foreach (fmt ${DATA_FORMATS})
-    add_test(NAME ${modName}_extract_hqp_${fmt}
-             COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-                     --target extract_hqp_${fmt})
-    set_tests_properties(${modName}_extract_hqp_${fmt} PROPERTIES
-                         FIXTURES_SETUP hqp_${fmt}_extracted
-                         RESOURCE_LOCK hqp_data
-                         LABELS "${modName}")
-endforeach ()
+set_tests_properties(${modName}_unit_test_radial PROPERTIES
+                     FIXTURES_REQUIRED ${modName}_nc4
+                     LABELS "${modName}")
 
 # --------------------------------------------------------------------------- #
