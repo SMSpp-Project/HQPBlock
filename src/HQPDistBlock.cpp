@@ -103,6 +103,11 @@ bool couples_row( const SparseMatrix & M , Eigen::Index h ,
 
 void copy_data( const HQPBlock & from , HQPBlock & to )
 {
+ if( from.has_hard_rows() )
+  throw( std::invalid_argument( "HQPDistBlock::load: the central HQPBlock "
+                                "has hard rows, which are not split among "
+                                "the owners" ) );
+
  const Index P = from.get_num_levels();
  std::vector< SparseMatrix > A , C;
  std::vector< std::vector< double > > b , d , we , wi;

@@ -85,6 +85,9 @@ void HQPSolver::set_par( idx_type par , int value )
   case( intLevelScale ):
    f_scale = value ? 1 : 0;
    break;
+  case( intOneInner ):
+   f_one = value ? 1 : 0;
+   break;
   case( intLogVerb ):
    f_verb = value;
    break;
@@ -193,11 +196,13 @@ int HQPSolver::compute( bool changedvars )
  f_iter = 0;
  for( Index p = 0 ; p < P ; ++p ) {
   // the inner Solver of a level is created the first time the level is
-  // solved, and it loads the HQPBlock as it is then
-  if( v_inner.size() <= p )
+  // solved, and it loads the HQPBlock as it is then; with intOneInner,
+  // that of level 0 solves them all
+  const Index k = f_one ? 0 : p;
+  if( v_inner.size() <= k )
    v_inner.push_back( new_inner() );
 
-  auto inner = v_inner[ p ];
+  auto inner = v_inner[ k ];
 
   // the scale of the level, from the value of its Objective (the slacks
   // and the regularization) in the previous compute()

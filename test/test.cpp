@@ -39,6 +39,39 @@
  *
  * - print(), whose lines are compared whole;
  *
+ * - the hard rows: their FRowConstraint (no slack, never relaxed along
+ *   the levels), the slacks and the Objective that they leave as they are,
+ *   the Modification of set_hard_b(), set_hard_d(), set_hard_A() and
+ *   set_hard_C(), the netCDF format, print(), the errors of load() and the
+ *   HQPDistBlock that refuses them;
+ *
+ * - the quadratic hard rows: the value of their QuadFunction against that
+ *   of the data at a few points, only the lower triangle of Q being kept,
+ *   the Modification of set_hard_eq(), the netCDF format, print(), the
+ *   errors of load() and the HQPDistBlock that refuses them;
+ *
+ * - the sum-exp and the p-norm hard rows: no FRowConstraint of their own
+ *   but the empty group of the cuts, the value that the HQPBlock computes
+ *   against that of the data at a few points (p = 1, 2 and 3), no
+ *   Modification from set_hard_se() and set_hard_pn() with no cuts, the
+ *   netCDF format, print(), the errors of load() and the HQPDistBlock that
+ *   refuses them;
+ *
+ * - the cuts of the nonlinear hard rows, the quadratic ones as cuts too
+ *   (static-cuts.txt): the gradients against central differences; Kelley
+ *   (no cut where the rows hold, one per violated row, its coefficients the
+ *   gradient divided by the largest one, separating the point by the
+ *   violation and keeping a feasible one, one BlockModAdd, no cut twice);
+ *   the right-hand sides shifted by set_hard_eq() and set_hard_pn(); the
+ *   cuts at the boundary point (dynamic-boundary.txt), also in the
+ *   logarithmic form of the sum-exp rows (dynamic-log.txt), tangent where
+ *   the segment crosses the boundary, separating and valid on a grid of
+ *   feasible points, and set_hard_se() shifting a cut of a row with l = 0
+ *   and removing that of one with l != 0; the p-norm at z = 0;
+ *   is_feasible() on the rows of the data and on the abstract
+ *   representation, also with the quadratic rows not as cuts, which are
+ *   not separated;
+ *
  * - the weights of the variables in the regularization: their coefficients
  *   in the Objective, also after set_center() and set_regularization(),
  *   their netCDF variable and the errors of load();
@@ -174,6 +207,20 @@ struct Data {
  std::vector< Vec > b , d , we , wi;
  double eps = 0;
  HQPBlock::StageData st;
+ Mat hA , hC;     ///< the hard rows (none if with no rows)
+ Vec hb , hd;
+ std::vector< Mat > hQ;  ///< the quadratic hard rows (none if heq empty)
+ Mat hCq;
+ Vec heq;
+ std::vector< Mat > hSE;  ///< the sum-exp hard rows (none if hse empty)
+ std::vector< Vec > hSEb , hSEc;
+ Mat hSEl;
+ Vec hse;
+ std::vector< Mat > hPN;  ///< the p-norm hard rows (none if hpn empty)
+ std::vector< Vec > hPNb;
+ Vec hPNp , hPNs;
+ Mat hPNl;
+ Vec hpn;
  };
 
 static HQPBlock::SparseMatrix sparse( const Mat & M )
@@ -190,9 +237,41 @@ static void load( HQPBlock & block , const Data & D )
   C.push_back( sparse( M ) );
  auto b = D.b , d = D.d , we = D.we , wi = D.wi;
  auto st = D.st;
+ HQPBlock::HardRows hr;
+ if( D.hA.rows() || D.hb.size() ) {
+  hr.A = sparse( D.hA );
+  hr.b = D.hb;
+  }
+ if( D.hC.rows() || D.hd.size() ) {
+  hr.C = sparse( D.hC );
+  hr.d = D.hd;
+  }
+ if( D.heq.size() ) {
+  for( const auto & Q : D.hQ )
+   hr.Q.push_back( sparse( Q ) );
+  hr.Cq = sparse( D.hCq );
+  hr.eq = D.heq;
+  }
+ if( D.hse.size() ) {
+  for( const auto & M : D.hSE )
+   hr.SE.push_back( sparse( M ) );
+  hr.SEb = D.hSEb;
+  hr.SEc = D.hSEc;
+  hr.SEl = sparse( D.hSEl );
+  hr.se = D.hse;
+  }
+ if( D.hpn.size() ) {
+  for( const auto & M : D.hPN )
+   hr.PN.push_back( sparse( M ) );
+  hr.PNb = D.hPNb;
+  hr.PNp = D.hPNp;
+  hr.PNs = D.hPNs;
+  hr.PNl = sparse( D.hPNl );
+  hr.pn = D.hpn;
+  }
  block.load( D.n , std::move( A ) , std::move( b ) , std::move( C ) ,
 	     std::move( d ) , std::move( we ) , std::move( wi ) , D.eps , {} ,
-	     std::move( st ) );
+	     std::move( st ) , std::move( hr ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -856,6 +935,8 @@ static void round_trip( const std::string & name , const Data & D ,
   CHECK( g.getDim( "NumEqElements" ).isNull() != eqel );
   CHECK( g.getVar( "EqWeight" ).isNull() != weight );
   CHECK( g.getVar( "Regularization" ).isNull() != reg );
+  CHECK( g.getDim( "NumHardEqRows" ).isNull() &&
+         g.getDim( "NumHardIneqRows" ).isNull() );
   }
 
  auto back = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
@@ -1014,6 +1095,214 @@ static void test_print( void )
  std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
  }
 
+
+/*--------------------------------------------------------------------------*/
+// the hard row h of the kind eq agrees with the data of block: only x, with
+// the entries of the row, and the right-hand side
+
+static bool hard_row_agrees( const HQPBlock & block , bool eq , Index h )
+{
+ const auto & hr = block.get_hard_rows();
+ const Mat M( eq ? hr.A : hr.C );
+ const auto & row = eq ? block.get_hard_eq()[ h ]
+                       : block.get_hard_ineq()[ h ];
+ const auto lf = static_cast< const LinearFunction * >(
+                  const_cast< FRowConstraint & >( row ).get_function() );
+ Vec cf( block.get_num_var() , 0 );
+ for( Index k = 0 ; k < lf->get_num_active_var() ; ++k ) {
+  const auto x = static_cast< const ColVariable * >(
+                                                 lf->get_active_var( k ) );
+  const auto j = x - block.get_x().data();
+  if( ( j < 0 ) || ( Index( j ) >= block.get_num_var() ) )
+   return( false );
+  cf[ j ] += lf->get_coefficient( k );
+  }
+ for( Index j = 0 ; j < block.get_num_var() ; ++j )
+  if( cf[ j ] != M( h , j ) )
+   return( false );
+ if( row.is_relaxed() )
+  return( false );
+ if( eq )
+  return( ( row.get_lhs() == hr.b[ h ] ) && ( row.get_rhs() == hr.b[ h ] ) );
+ return( ( row.get_lhs() == -Inf< double >() ) &&
+         ( row.get_rhs() == hr.d[ h ] ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+// all the hard rows agree with the data
+
+static bool hard_rows_agree( const HQPBlock & block )
+{
+ for( Index h = 0 ; h < block.get_hard_eq().size() ; ++h )
+  if( ! hard_row_agrees( block , true , h ) )
+   return( false );
+ for( Index h = 0 ; h < block.get_hard_ineq().size() ; ++h )
+  if( ! hard_row_agrees( block , false , h ) )
+   return( false );
+ return( true );
+ }
+
+/*--------------------------------------------------------------------------*/
+// small_data() with one hard equality and two hard inequalities, the second
+// with no entries
+
+static Data hard_data( void )
+{
+ Data D = small_data();
+ D.hA = Mat( 1 , 2 );
+ D.hA << 1 , -1;
+ D.hb = { 0.5 };
+ D.hC = Mat( 2 , 2 );
+ D.hC << 2 , 0 ,
+         0 , 0;
+ D.hd = { 3 , 1 };
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_hard_rows( void )
+{
+ std::cout << "the hard rows" << std::endl;
+ int e0 = errors;
+
+ // the abstract representation: the levels as without them
+ HQPBlock block;
+ load( block , hard_data() );
+ CHECK( block.has_hard_rows() );
+ generate( block );
+ CHECK( ( block.get_hard_eq().size() == 1 ) &&
+        ( block.get_hard_ineq().size() == 2 ) );
+ CHECK( hard_rows_agree( block ) );
+ CHECK( rows_agree( block ) );
+ CHECK( ( block.get_v().size() == 1 ) && ( block.get_w().size() == 2 ) );
+ CHECK( objective_agrees( block , { true , false } ) );
+ CHECK( block.get_static_constraint_v< FRowConstraint >( "hard_eq" ) &&
+        block.get_static_constraint_v< FRowConstraint >( "hard_ineq" ) );
+
+ // never relaxed along the levels
+ block.reset_levels( true );
+ CHECK( hard_rows_agree( block ) );
+ block.next_level();
+ CHECK( hard_rows_agree( block ) );
+ block.reset_levels( false );
+ std::cout << " the FRowConstraint along the levels"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the Modification: only what changes
+ e0 = errors;
+ auto s = new FakeSolver();
+ block.register_Solver( s );
+ const auto f = objective( block );
+ ModCount c;
+ block.set_hard_b( { 0.5 } );
+ CHECK( count( s , f ).total() == 0 );
+ block.set_hard_b( { 1.5 } );
+ c = count( s , f );
+ CHECK( ( c.rhs == 1 ) && ( c.total() == 1 ) );
+ block.set_hard_d( { 3 , 2 } );
+ c = count( s , f );
+ CHECK( ( c.rhs == 1 ) && ( c.total() == 1 ) );
+ block.set_hard_d( { 4 , 2 } , eNoMod );
+ CHECK( count( s , f ).total() == 0 );
+ Mat C( 2 , 2 );
+ C << 5 , 0 ,
+      0 , 1;
+ block.set_hard_C( sparse( C ) );
+ c = count( s , f );
+ CHECK( ( c.coeff == 1 ) && ( c.added == 1 ) && ( c.total() == 2 ) );
+ Mat A( 1 , 2 );
+ A << 1 , 0;
+ block.set_hard_A( sparse( A ) );
+ c = count( s , f );
+ CHECK( ( c.coeff == 1 ) && ( c.total() == 1 ) );
+ CHECK( hard_rows_agree( block ) );
+ CHECK( block.get_hard_rows().b == Vec( { 1.5 } ) );
+ CHECK( block.get_hard_rows().d == Vec( { 4 , 2 } ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  block.set_hard_b( { 1 , 2 } ); } ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  block.set_hard_C( sparse( Mat( 1 , 2 ) ) ); } ) );
+ block.unregister_Solver( s );
+ delete s;
+ std::cout << " the Modification of the data"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the netCDF format
+ e0 = errors;
+ const auto file = ( std::filesystem::temp_directory_path() /
+                     "HQPBlock_unit_test_hard.nc4" ).string();
+ block.serialize( file , eBlockFile );
+ {
+  netCDF::NcFile nf( file , netCDF::NcFile::read );
+  auto g = block_group( nf );
+  CHECK( ( g.getDim( "NumHardEqRows" ).getSize() == 1 ) &&
+         ( g.getDim( "NumHardIneqRows" ).getSize() == 2 ) );
+  CHECK( g.getVar( "HardEqRows" ).isNull() &&
+         g.getVar( "HardEqWeight" ).isNull() );
+  }
+ auto back = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
+ std::filesystem::remove( file );
+ CHECK( back );
+ if( back ) {
+  const auto & h = block.get_hard_rows() , & hb = back->get_hard_rows();
+  CHECK( ( Mat( hb.A ) == Mat( h.A ) ) && ( Mat( hb.C ) == Mat( h.C ) ) &&
+         ( hb.b == h.b ) && ( hb.d == h.d ) );
+  CHECK( back->get_b() == block.get_b() );
+  generate( *back );
+  CHECK( hard_rows_agree( *back ) && rows_agree( *back ) );
+  delete back;
+  }
+ std::cout << " the netCDF round trip"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // print()
+ e0 = errors;
+ {
+  HQPBlock pb;
+  load( pb , hard_data() );
+  std::ostringstream s0 , s1;
+  pb.print( s0 );
+  pb.print( s1 , 1 );
+  CHECK( s0.str().find( " hard rows: 1 equality, 2 inequality, 0 "
+                       "quadratic\n" ) != std::string::npos );
+  CHECK( s1.str().find( "   1 x_0 -1 x_1 = 0.5\n   2 x_0 <= 3\n   <= 1\n" )
+         != std::string::npos );
+  }
+ std::cout << " print()" << ( errors == e0 ? " -> OK" : " -> KO" )
+           << std::endl;
+
+ // the errors of load(), and an empty matrix of any columns being none
+ e0 = errors;
+ {
+  HQPBlock eb;
+  Data D = hard_data();
+  D.hA = Mat( 1 , 3 );
+  D.hA.setZero();
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , D ); } ) );
+  D = hard_data();
+  D.hd = { 3 };
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , D ); } ) );
+  D = small_data();
+  D.hA = Mat( 0 , 7 );
+  load( eb , D );
+  CHECK( ( ! eb.has_hard_rows() ) && ( eb.get_hard_rows().A.cols() == 2 ) );
+  }
+ std::cout << " the errors of load()"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the HQPDistBlock does not split them
+ e0 = errors;
+ {
+  HQPBlock central;
+  load( central , hard_data() );
+  HQPDistBlock dist;
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+   dist.load( central , 2 , { 0 , 1 } ); } ) );
+  }
+ std::cout << " refused by HQPDistBlock"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
 
 /*--------------------------------------------------------------------------*/
 
@@ -2149,8 +2438,8 @@ static void test_recursion( void )
  // dependent rows in a stage, and through the dynamics
  eqp_case( "dependent rows in a stage" , 4 , rep( 9 , 4 ) , rep( 8 , 2 ) ,
 	   { 2 , 3 , 0 , 2 , 2 , 3 , 0 , 2 , 0 } , 2 , 1e-6 , kInStage );
- eqp_case( "rows dependent through the dynamics" , 5 , rep( 9 , 4 ) , rep( 8 ,
-									   2 ) ,
+ eqp_case( "rows dependent through the dynamics" , 5 , rep( 9 , 4 ) ,
+	   rep( 8 , 2 ) ,
 	   { 1 , 0 , 1 , 0 , 1 , 0 , 1 , 0 , 0 } , 2 , 1e-6 ,
       kThroughDynamics );
  eqp_case( "both" , 6 , rep( 9 , 4 ) , rep( 8 , 2 ) , { 2 , 2 , 2 , 2 , 2 , 2 ,
@@ -2470,6 +2759,728 @@ static void test_file( const std::string & file )
  }
 
 /*--------------------------------------------------------------------------*/
+// small_data() with two quadratic hard rows: 1/2 x' Q0 x + x_0 - x_1 <= 3
+// with a full symmetric Q0, and 1/2 x' Q1 x <= 1 with no linear part
+
+static Data quad_data( void )
+{
+ Data D = small_data();
+ Mat Q0( 2 , 2 ) , Q1( 2 , 2 );
+ Q0 << 2 , 1 ,
+       1 , 4;
+ Q1 << 0 , 0 ,
+       0 , 2;
+ D.hQ = { Q0 , Q1 };
+ D.hCq = Mat( 2 , 2 );
+ D.hCq << 1 , -1 ,
+          0 , 0;
+ D.heq = { 3 , 1 };
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the quadratic hard row i agrees with the data of D at the point x: the
+// value of its QuadFunction and its sides
+
+static bool quad_row_agrees( HQPBlock & block , const Data & D , Index i ,
+                             const Vec & x )
+{
+ auto & bx = x_of( block );
+ for( Index j = 0 ; j < x.size() ; ++j )
+  bx[ j ].set_value( x[ j ] );
+ auto & row = const_cast< FRowConstraint & >( block.get_hard_quad()[ i ] );
+ auto f = static_cast< QuadFunction * >( row.get_function() );
+ f->compute( true );
+ double v = 0;
+ for( Index j = 0 ; j < x.size() ; ++j ) {
+  v += D.hCq( i , j ) * x[ j ];
+  for( Index k = 0 ; k < x.size() ; ++k )
+   v += D.hQ[ i ]( j , k ) * x[ j ] * x[ k ] / 2;
+  }
+ return( ( std::abs( f->get_value() - v ) <= 1e-12 * ( 1 + std::abs( v ) ) )
+         && ( row.get_lhs() == -Inf< double >() ) &&
+         ( row.get_rhs() == block.get_hard_rows().eq[ i ] ) &&
+         ( ! row.is_relaxed() ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_quad_rows( void )
+{
+ std::cout << "the quadratic hard rows" << std::endl;
+ int e0 = errors;
+
+ // the abstract representation, at a few points
+ const Data D = quad_data();
+ HQPBlock block;
+ load( block , D );
+ CHECK( block.has_hard_rows() );
+ generate( block );
+ CHECK( block.get_hard_quad().size() == 2 );
+ CHECK( block.get_hard_eq().empty() && block.get_hard_ineq().empty() );
+ CHECK( block.get_static_constraint_v< FRowConstraint >( "hard_quad" ) );
+ for( const Vec & x : { Vec( { 0 , 0 } ) , Vec( { 1 , -2 } ) ,
+                        Vec( { -0.5 , 3 } ) } )
+  for( Index i = 0 ; i < 2 ; ++i )
+   CHECK( quad_row_agrees( block , D , i , x ) );
+ // only the lower triangle is kept
+ CHECK( ( block.get_hard_rows().Q[ 0 ].coeff( 0 , 1 ) == 0 ) &&
+        ( block.get_hard_rows().Q[ 0 ].coeff( 1 , 0 ) == 1 ) );
+ CHECK( rows_agree( block ) );
+ block.reset_levels( true );
+ block.next_level();
+ CHECK( quad_row_agrees( block , D , 0 , Vec( { 1 , 1 } ) ) );
+ block.reset_levels( false );
+ std::cout << " the FRowConstraint" << ( errors == e0 ? " -> OK" : " -> KO" )
+           << std::endl;
+
+ // the Modification: only what changes
+ e0 = errors;
+ auto s = new FakeSolver();
+ block.register_Solver( s );
+ const auto f = objective( block );
+ block.set_hard_eq( { 3 , 1 } );
+ CHECK( count( s , f ).total() == 0 );
+ block.set_hard_eq( { 3 , 2 } );
+ ModCount c = count( s , f );
+ CHECK( ( c.rhs == 1 ) && ( c.total() == 1 ) );
+ block.set_hard_eq( { 5 , 2 } , eNoMod );
+ CHECK( count( s , f ).total() == 0 );
+ CHECK( block.get_hard_rows().eq == Vec( { 5 , 2 } ) );
+ CHECK( block.get_hard_quad()[ 0 ].get_rhs() == 5 );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  block.set_hard_eq( { 1 } ); } ) );
+ block.unregister_Solver( s );
+ delete s;
+ std::cout << " the Modification of the data"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the netCDF format
+ e0 = errors;
+ const auto file = ( std::filesystem::temp_directory_path() /
+                     "HQPBlock_unit_test_quad.nc4" ).string();
+ block.serialize( file , eBlockFile );
+ {
+  netCDF::NcFile nf( file , netCDF::NcFile::read );
+  auto g = block_group( nf );
+  CHECK( ( g.getDim( "NumHardQuadRows" ).getSize() == 2 ) &&
+         ( g.getDim( "NumHardQuadQElements" ).getSize() == 4 ) );
+  }
+ auto back = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
+ std::filesystem::remove( file );
+ CHECK( back );
+ if( back ) {
+  const auto & h = block.get_hard_rows() , & hb = back->get_hard_rows();
+  CHECK( ( hb.Q.size() == 2 ) && ( Mat( hb.Q[ 0 ] ) == Mat( h.Q[ 0 ] ) ) &&
+         ( Mat( hb.Q[ 1 ] ) == Mat( h.Q[ 1 ] ) ) &&
+         ( Mat( hb.Cq ) == Mat( h.Cq ) ) && ( hb.eq == h.eq ) );
+  generate( *back );
+  Data Db = D;
+  Db.heq = { 5 , 2 };
+  CHECK( quad_row_agrees( *back , Db , 0 , Vec( { 1 , -2 } ) ) );
+  delete back;
+  }
+ std::cout << " the netCDF round trip"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // print(), the errors of load(), the HQPDistBlock
+ e0 = errors;
+ {
+  std::ostringstream s0;
+  HQPBlock pb;
+  load( pb , quad_data() );
+  pb.print( s0 );
+  CHECK( s0.str().find( " hard rows: 0 equality, 0 inequality, 2 "
+                        "quadratic\n" ) != std::string::npos );
+  HQPBlock eb;
+  Data E = quad_data();
+  E.heq = { 3 };
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  E = quad_data();
+  E.hQ[ 1 ] = Mat( 3 , 3 );
+  E.hQ[ 1 ].setZero();
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  HQPDistBlock dist;
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+   dist.load( pb , 2 , { 0 , 1 } ); } ) );
+  }
+ std::cout << " print(), load() and HQPDistBlock"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+// small_data() with two sum-exp hard rows,
+//   0.5 exp( x_0 - x_1 + 0.1 ) + 2 exp( 2 x_1 - 0.5 ) + x_1 <= 10 ,
+//   exp( x_0 + x_1 ) <= 3 (its weight not given, hence 1) ,
+// and three p-norm hard rows,
+//   0.5 || ( x_0 , x_1 + 1 , x_0 + x_1 - 1 ) ||_3 - x_0 <= 4 ,
+//   | 2 x_0 - x_1 + 0.5 | <= 1 (p = 1) and || x ||_2 <= 2
+
+static Data conic_data( void )
+{
+ Data D = small_data();
+ Mat S0( 2 , 2 ) , S1( 1 , 2 );
+ S0 << 1 , -1 ,
+       0 , 2;
+ S1 << 1 , 1;
+ D.hSE = { S0 , S1 };
+ D.hSEb = { { 0.1 , -0.5 } , { 0 } };
+ D.hSEc = { { 0.5 , 2 } , {} };
+ D.hSEl = Mat( 2 , 2 );
+ D.hSEl << 0 , 1 ,
+           0 , 0;
+ D.hse = { 10 , 3 };
+ Mat P0( 3 , 2 ) , P1( 1 , 2 ) , P2( 2 , 2 );
+ P0 << 1 , 0 ,
+       0 , 1 ,
+       1 , 1;
+ P1 << 2 , -1;
+ P2 << 1 , 0 ,
+       0 , 1;
+ D.hPN = { P0 , P1 , P2 };
+ D.hPNb = { { 0 , 1 , -1 } , { 0.5 } , {} };
+ D.hPNp = { 3 , 1 , 2 };
+ D.hPNs = { 0.5 , 1 , 1 };
+ D.hPNl = Mat( 3 , 2 );
+ D.hPNl << -1 , 0 ,
+           0 , 0 ,
+           0 , 0;
+ D.hpn = { 4 , 1 , 2 };
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the value at x of the sum-exp (se) or p-norm hard row i of the data of
+// D, computed here
+
+static double conic_value( const Data & D , bool se , Index i ,
+                           const Vec & x )
+{
+ const Mat & M = se ? D.hSE[ i ] : D.hPN[ i ];
+ const Mat & L = se ? D.hSEl : D.hPNl;
+ const Vec & b = se ? D.hSEb[ i ] : D.hPNb[ i ];
+ double v = 0;
+ for( Index j = 0 ; j < x.size() ; ++j )
+  v += L( i , j ) * x[ j ];
+ double nrm = 0;
+ for( Index k = 0 ; k < Index( M.rows() ) ; ++k ) {
+  double z = b.empty() ? 0 : b[ k ];
+  for( Index j = 0 ; j < x.size() ; ++j )
+   z += M( k , j ) * x[ j ];
+  if( se )
+   v += ( D.hSEc[ i ].empty() ? 1 : D.hSEc[ i ][ k ] ) * std::exp( z );
+  else
+   nrm += std::pow( std::abs( z ) , D.hPNp[ i ] );
+  }
+ if( ! se )
+  v += D.hPNs[ i ] * std::pow( nrm , 1 / D.hPNp[ i ] );
+ return( v );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the sum-exp (se) or p-norm hard row i of block agrees with the data of D
+// at the point x: the value that the HQPBlock computes and the right-hand
+// side
+
+static bool conic_row_agrees( const HQPBlock & block , const Data & D ,
+                              bool se , Index i , const Vec & x )
+{
+ const auto k = se ? HQPBlock::kSumExpRow : HQPBlock::kPNormRow;
+ const double v = conic_value( D , se , i , x );
+ const auto & h = block.get_hard_rows();
+ return( ( std::abs( block.hard_row_value( k , i , x ) - v ) <=
+           1e-12 * ( 1 + std::abs( v ) ) ) &&
+         ( ( se ? h.se[ i ] : h.pn[ i ] ) ==
+           ( se ? D.hse[ i ] : D.hpn[ i ] ) ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_conic_rows( void )
+{
+ std::cout << "the sum-exp and the p-norm hard rows" << std::endl;
+ int e0 = errors;
+
+ // the abstract representation, at a few points
+ const Data D = conic_data();
+ HQPBlock block;
+ load( block , D );
+ CHECK( block.has_hard_rows() );
+ generate( block );
+ // no FRowConstraint of their own, only the (empty) group of the cuts
+ CHECK( block.get_hard_quad().empty() && block.get_hard_eq().empty() );
+ CHECK( ! ( block.get_static_constraint_v< FRowConstraint >( "hard_sumexp" ) ||
+           block.get_static_constraint_v< FRowConstraint >( "hard_pnorm" ) ) );
+ CHECK( ( block.get_dynamic_constraint< FRowConstraint >( 0 ) ==
+          & block.get_link_rows() ) &&
+        ( block.get_dynamic_constraint< FRowConstraint >( "hard_cuts" ) ==
+          & block.get_cut_rows() ) && block.get_cut_rows().empty() );
+ // the weights not given are ones, as the scales and the b not given
+ CHECK( ( block.get_hard_rows().SEc[ 1 ] == Vec( { 1 } ) ) &&
+        ( block.get_hard_rows().PNb[ 2 ] == Vec( { 0 , 0 } ) ) );
+ for( const Vec & x : { Vec( { 0 , 0 } ) , Vec( { 1 , -2 } ) ,
+                        Vec( { -0.5 , 0.3 } ) } ) {
+  for( Index i = 0 ; i < 2 ; ++i )
+   CHECK( conic_row_agrees( block , D , true , i , x ) );
+  for( Index i = 0 ; i < 3 ; ++i )
+   CHECK( conic_row_agrees( block , D , false , i , x ) );
+  }
+ CHECK( rows_agree( block ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  (void) block.hard_row_value( HQPBlock::kSumExpRow , 2 , Vec( 2 , 0 ) ); } )
+        && throws< std::invalid_argument >( [ & ]() {
+  (void) block.hard_row_value( HQPBlock::kPNormRow , 0 , Vec( 3 , 0 ) ); } ) );
+ std::cout << " the values of the rows"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the Modification: with no cuts, none
+ e0 = errors;
+ auto s = new FakeSolver();
+ block.register_Solver( s );
+ const auto f = objective( block );
+ block.set_hard_se( { 10 , 5 } );
+ block.set_hard_pn( { 3 , 1 , 1 } );
+ CHECK( count( s , f ).total() == 0 );
+ block.set_hard_se( { 7 , 5 } , eNoMod );
+ block.set_hard_pn( { 3 , 2 , 1 } , eNoMod );
+ CHECK( count( s , f ).total() == 0 );
+ CHECK( ( block.get_hard_rows().se == Vec( { 7 , 5 } ) ) &&
+        ( block.get_hard_rows().pn == Vec( { 3 , 2 , 1 } ) ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  block.set_hard_se( { 1 } ); } ) );
+ CHECK( throws< std::invalid_argument >( [ & ]() {
+  block.set_hard_pn( { 1 , 2 } ); } ) );
+ block.unregister_Solver( s );
+ delete s;
+ std::cout << " the Modification of the data"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the netCDF format
+ e0 = errors;
+ const auto file = ( std::filesystem::temp_directory_path() /
+                     "HQPBlock_unit_test_conic.nc4" ).string();
+ block.serialize( file , eBlockFile );
+ {
+  netCDF::NcFile nf( file , netCDF::NcFile::read );
+  auto g = block_group( nf );
+  CHECK( ( g.getDim( "NumHardSumExpRows" ).getSize() == 2 ) &&
+         ( g.getDim( "NumHardSumExpTermRows" ).getSize() == 3 ) &&
+         ( g.getDim( "NumHardPNormRows" ).getSize() == 3 ) &&
+         ( g.getDim( "NumHardPNormTermRows" ).getSize() == 6 ) );
+  CHECK( ( ! g.getVar( "HardSumExpTermWeight" ).isNull() ) &&
+         ( ! g.getVar( "HardPNormScale" ).isNull() ) &&
+         ( ! g.getVar( "HardPNormP" ).isNull() ) &&
+         g.getVar( "HardPNormTermWeight" ).isNull() );
+  }
+ auto back = dynamic_cast< HQPBlock * >( Block::deserialize( file ) );
+ std::filesystem::remove( file );
+ CHECK( back );
+ if( back ) {
+  const auto & h = block.get_hard_rows() , & hb = back->get_hard_rows();
+  bool same = ( hb.SE.size() == 2 ) && ( hb.PN.size() == 3 ) &&
+              ( Mat( hb.SEl ) == Mat( h.SEl ) ) && ( hb.se == h.se ) &&
+              ( Mat( hb.PNl ) == Mat( h.PNl ) ) && ( hb.pn == h.pn ) &&
+              ( hb.PNp == h.PNp ) && ( hb.PNs == h.PNs );
+  for( Index i = 0 ; same && ( i < 2 ) ; ++i )
+   same = ( Mat( hb.SE[ i ] ) == Mat( h.SE[ i ] ) ) &&
+          ( hb.SEb[ i ] == h.SEb[ i ] ) && ( hb.SEc[ i ] == h.SEc[ i ] );
+  for( Index i = 0 ; same && ( i < 3 ) ; ++i )
+   same = ( Mat( hb.PN[ i ] ) == Mat( h.PN[ i ] ) ) &&
+          ( hb.PNb[ i ] == h.PNb[ i ] );
+  CHECK( same );
+  generate( *back );
+  Data Db = D;
+  Db.hse = { 7 , 5 };
+  Db.hpn = { 3 , 2 , 1 };
+  CHECK( conic_row_agrees( *back , Db , true , 0 , Vec( { 1 , -2 } ) ) &&
+         conic_row_agrees( *back , Db , false , 0 , Vec( { 1 , -2 } ) ) );
+  delete back;
+  }
+ std::cout << " the netCDF round trip"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // print(), the errors of load(), the HQPDistBlock
+ e0 = errors;
+ {
+  std::ostringstream s0;
+  HQPBlock pb;
+  load( pb , conic_data() );
+  pb.print( s0 );
+  CHECK( s0.str().find( " hard rows: 0 equality, 0 inequality, 0 "
+                        "quadratic\n conic hard rows: 2 sum-exp, 3 "
+                        "p-norm\n" ) != std::string::npos );
+  HQPBlock eb;
+  Data E = conic_data();          // a weight that is not positive
+  E.hSEc[ 0 ] = { 0.5 , 0 };
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  E = conic_data();               // a matrix with 3 columns
+  E.hSE[ 1 ] = Mat::Zero( 1 , 3 );
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  E = conic_data();               // a b of the wrong size
+  E.hPNb[ 1 ] = { 1 , 2 };
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  E = conic_data();               // p < 1
+  E.hPNp[ 2 ] = 0.5;
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  E = conic_data();               // a missing p
+  E.hPNp = { 3 , 1 };
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  E = conic_data();               // the linear terms of the wrong size
+  E.hSEl = Mat::Zero( 1 , 2 );
+  CHECK( throws< std::invalid_argument >( [ & ]() { load( eb , E ); } ) );
+  HQPDistBlock dist;
+  CHECK( throws< std::invalid_argument >( [ & ]() {
+   dist.load( pb , 2 , { 0 , 1 } ); } ) );
+  }
+ std::cout << " print(), load() and HQPDistBlock"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+// conic_data() with the quadratic hard rows of quad_data(), all the
+// nonlinear hard rows strictly satisfied at x = 0 and all but the first
+// p-norm one violated at x = ( 3 , 2 )
+
+static Data cut_data( void )
+{
+ Data D = conic_data();
+ const Data Q = quad_data();
+ D.hQ = Q.hQ;
+ D.hCq = Q.hCq;
+ D.heq = Q.heq;
+ return( D );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the abstract representation of block, its Constraint with stcc
+
+static void generate( HQPBlock & block , Configuration * stcc )
+{
+ block.generate_abstract_variables();
+ block.generate_abstract_constraints( stcc );
+ block.generate_objective();
+ }
+
+/*--------------------------------------------------------------------------*/
+// the coefficients of the cut c on the x of block, dense
+
+static Vec cut_coefficients( const HQPBlock & block ,
+                             const FRowConstraint & c )
+{
+ Vec a( block.get_num_var() , 0 );
+ const auto lf = static_cast< const LinearFunction * >( c.get_function() );
+ for( const auto & [ var , cf ] : lf->get_v_var() )
+  a[ static_cast< const ColVariable * >( var ) - block.get_x().data() ] += cf;
+ return( a );
+ }
+
+/*--------------------------------------------------------------------------*/
+// a' x - rhs for the cut c at x
+
+static double cut_slack( const HQPBlock & block , const FRowConstraint & c ,
+                         const Vec & x )
+{
+ const Vec a = cut_coefficients( block , c );
+ double v = - c.get_rhs();
+ for( Index j = 0 ; j < x.size() ; ++j )
+  v += a[ j ] * x[ j ];
+ return( v );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the row of kind k and index i, with the gradient of the HQPBlock, of the
+// rows of cut_data(), in the order in which the cuts are separated
+
+struct CutRow {
+ HQPBlock::hard_row_kind k;
+ Index i;
+ };
+
+static const std::vector< CutRow > violated = {
+ { HQPBlock::kQuadRow , 0 } , { HQPBlock::kQuadRow , 1 } ,
+ { HQPBlock::kSumExpRow , 0 } , { HQPBlock::kSumExpRow , 1 } ,
+ { HQPBlock::kPNormRow , 1 } , { HQPBlock::kPNormRow , 2 } };
+
+/*--------------------------------------------------------------------------*/
+// writes x in the ColVariable of block and the slacks of each level at x,
+// so that the rows of the levels hold
+
+static void set_point( HQPBlock & block , const Vec & x )
+{
+ auto & bx = x_of( block );
+ for( Index j = 0 ; j < x.size() ; ++j )
+  bx[ j ].set_value( x[ j ] );
+ for( Index p = 0 ; p < block.get_num_levels() ; ++p ) {
+  Vec v , w;
+  block.level_slacks( p , v , w );
+  block.set_slack_values( p , v , w );
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+// the point x0 + t ( x - x0 ), t in ( 0 , 1 ) where the row k i of block
+// crosses its boundary, by bisection, g( x0 ) < u < g( x ) being assumed
+
+static Vec crossing( const HQPBlock & block , HQPBlock::hard_row_kind k ,
+                     Index i , const Vec & x0 , const Vec & x )
+{
+ const auto & h = block.get_hard_rows();
+ const double u = ( k == HQPBlock::kQuadRow ) ? h.eq[ i ] :
+                  ( k == HQPBlock::kSumExpRow ) ? h.se[ i ] : h.pn[ i ];
+ Vec y( x.size() );
+ auto at = [ & ]( double t ) {
+  for( Index j = 0 ; j < x.size() ; ++j )
+   y[ j ] = x0[ j ] + t * ( x[ j ] - x0[ j ] );
+  return( block.hard_row_value( k , i , y ) - u );
+  };
+ double lo = 0 , hi = 1;
+ for( int it = 0 ; it < 100 ; ++it ) {
+  const double t = ( lo + hi ) / 2;
+  ( at( t ) > 0 ? hi : lo ) = t;
+  }
+ at( hi );
+ return( y );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+static void test_cut_rows( void )
+{
+ std::cout << "the cuts of the nonlinear hard rows" << std::endl;
+ int e0 = errors;
+ const Data D = cut_data();
+ const Vec x0( { 0 , 0 } ) , xv( { 3 , 2 } );
+
+ // the gradient against central differences, at a few points, the value
+ // against the data
+ {
+  HQPBlock block;
+  load( block , D );
+  const Index m[] = { 2 , 2 , 3 };
+  for( const Vec & x : { Vec( { 0.3 , -0.7 } ) , Vec( { 1 , -2 } ) ,
+                         Vec( { -0.5 , 0.3 } ) , xv } )
+   for( int h = 0 ; h < 3 ; ++h )
+    for( Index i = 0 ; i < m[ h ] ; ++i ) {
+     const auto k = HQPBlock::hard_row_kind( h );
+     Vec g;
+     const double v = block.hard_row_value( k , i , x , & g );
+     if( h )
+      CHECK( std::abs( v - conic_value( D , h == 1 , i , x ) ) <=
+             1e-12 * ( 1 + std::abs( v ) ) );
+     for( Index j = 0 ; j < 2 ; ++j ) {
+      Vec a = x , b = x;
+      a[ j ] += 1e-6;
+      b[ j ] -= 1e-6;
+      const double fd = ( block.hard_row_value( k , i , a ) -
+                          block.hard_row_value( k , i , b ) ) / 2e-6;
+      CHECK( std::abs( fd - g[ j ] ) <= 1e-6 * ( 1 + std::abs( g[ j ] ) ) );
+      }
+     }
+  }
+ std::cout << " the gradients" << ( errors == e0 ? " -> OK" : " -> KO" )
+           << std::endl;
+
+ // Kelley: no cut at x0, one for each violated row at xv, which is its
+ // linearization there divided by the largest coefficient, again none
+ e0 = errors;
+ auto stcc = Configuration::deserialize( "static-cuts.txt" );
+ HQPBlock block;
+ load( block , D );
+ generate( block , stcc );
+ CHECK( block.has_quad_cuts() && block.get_hard_quad().empty() );
+ CHECK( block.get_dynamic_constraint< FRowConstraint >( 1 ) ==
+        & block.get_cut_rows() );
+ auto s = new FakeSolver();
+ block.register_Solver( s );
+ const auto f = objective( block );
+ set_point( block , x0 );
+ CHECK( block.is_feasible( false ) && block.is_feasible( true ) );
+ block.generate_dynamic_constraints();
+ CHECK( block.get_cut_rows().empty() && ( count( s , f ).total() == 0 ) );
+ set_point( block , xv );
+ // the rows of the levels and the cuts, none, hold, the hard rows do not
+ CHECK( ( ! block.is_feasible( false ) ) && block.is_feasible( true ) );
+ block.generate_dynamic_constraints();
+ ModCount c = count( s , f );
+ CHECK( ( block.get_cut_rows().size() == violated.size() ) &&
+        ( c.other == 1 ) && ( c.total() == 1 ) );
+ CHECK( ! block.is_feasible( true ) );
+ {
+  auto it = block.get_cut_rows().begin();
+  for( const auto & [ k , i ] : violated ) {
+   const auto & h = block.get_hard_rows();
+   const double u = ( k == HQPBlock::kQuadRow ) ? h.eq[ i ] :
+                    ( k == HQPBlock::kSumExpRow ) ? h.se[ i ] : h.pn[ i ];
+   Vec g;
+   const double v = block.hard_row_value( k , i , xv , & g );
+   double sc = 1 , gx = 0;
+   for( Index j = 0 ; j < 2 ; ++j ) {
+    sc = std::max( sc , std::abs( g[ j ] ) );
+    gx += g[ j ] * xv[ j ];
+    }
+   const Vec a = cut_coefficients( block , *it );
+   for( Index j = 0 ; j < 2 ; ++j )
+    CHECK( std::abs( a[ j ] - g[ j ] / sc ) <= 1e-12 );
+   CHECK( std::abs( it->get_rhs() - ( u - v + gx ) / sc ) <=
+          1e-12 * ( 1 + std::abs( it->get_rhs() ) ) );
+   CHECK( it->get_lhs() == -Inf< double >() );
+   // it separates xv by the violation, scaled, and keeps x0
+   CHECK( std::abs( cut_slack( block , *it , xv ) - ( v - u ) / sc ) <=
+          1e-9 * ( 1 + v ) );
+   CHECK( cut_slack( block , *it , x0 ) <= 0 );
+   ++it;
+   }
+  }
+ block.generate_dynamic_constraints();
+ CHECK( ( block.get_cut_rows().size() == violated.size() ) &&
+        ( count( s , f ).total() == 0 ) );
+ std::cout << " the cuts of Kelley, no cut twice"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // a change of the right-hand sides shifts the cuts of the row: the cut
+ // still separates xv by the new violation, scaled
+ e0 = errors;
+ {
+  const auto & cuts = block.get_cut_rows();
+  const auto q0 = cuts.begin() , p2 = std::prev( cuts.end() );
+  const double sq = ( block.hard_row_value( HQPBlock::kQuadRow , 0 , xv ) -
+                      3 ) / cut_slack( block , *q0 , xv );
+  const double sp = ( block.hard_row_value( HQPBlock::kPNormRow , 2 , xv ) -
+                      2 ) / cut_slack( block , *p2 , xv );
+  block.set_hard_eq( { 3.5 , 1 } );
+  block.set_hard_pn( { 4 , 1 , 2.5 } );
+  c = count( s , f );
+  CHECK( ( c.rhs == 2 ) && ( c.total() == 2 ) );
+  CHECK( std::abs( cut_slack( block , *q0 , xv ) - ( block.hard_row_value(
+          HQPBlock::kQuadRow , 0 , xv ) - 3.5 ) / sq ) <= 1e-9 );
+  CHECK( std::abs( cut_slack( block , *p2 , xv ) - ( block.hard_row_value(
+          HQPBlock::kPNormRow , 2 , xv ) - 2.5 ) / sp ) <= 1e-9 );
+  block.set_hard_eq( { 3 , 1 } , eNoMod );
+  block.set_hard_pn( { 4 , 1 , 2 } , eNoMod );
+  CHECK( count( s , f ).total() == 0 );
+  CHECK( std::abs( cut_slack( block , *q0 , xv ) - ( block.hard_row_value(
+          HQPBlock::kQuadRow , 0 , xv ) - 3 ) / sq ) <= 1e-9 );
+  }
+ block.unregister_Solver( s );
+ std::cout << " the right-hand sides shifted"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // Veinott, with and without the logarithmic form of the sum-exp rows:
+ // from x0, found strictly satisfying all the rows, each cut is tangent at
+ // the point where the segment to xv crosses its boundary, it separates xv
+ // and keeps x0
+ e0 = errors;
+ for( const char * file : { "dynamic-boundary.txt" , "dynamic-log.txt" } ) {
+  auto dycc = Configuration::deserialize( file );
+  HQPBlock vb;
+  load( vb , D );
+  generate( vb , stcc );
+  set_point( vb , x0 );
+  vb.generate_dynamic_constraints( dycc );
+  CHECK( vb.get_cut_rows().empty() );
+  set_point( vb , xv );
+  vb.generate_dynamic_constraints( dycc );
+  CHECK( vb.get_cut_rows().size() == violated.size() );
+  auto it = vb.get_cut_rows().begin();
+  for( const auto & [ k , i ] : violated ) {
+   const Vec xf = crossing( vb , k , i , x0 , xv );
+   CHECK( std::abs( cut_slack( vb , *it , xf ) ) <= 1e-6 );
+   CHECK( cut_slack( vb , *it , xv ) > 1e-3 );
+   CHECK( cut_slack( vb , *it , x0 ) < 0 );
+   ++it;
+   }
+
+  // the cuts hold on a grid of the points where the rows hold
+  bool valid = true;
+  for( int a = -30 ; a <= 30 ; ++a )
+   for( int b = -30 ; b <= 30 ; ++b ) {
+    const Vec x( { a / 10.0 , b / 10.0 } );
+    auto ct = vb.get_cut_rows().begin();
+    for( const auto & [ k , i ] : violated ) {
+     const auto & h = vb.get_hard_rows();
+     const double u = ( k == HQPBlock::kQuadRow ) ? h.eq[ i ] :
+                      ( k == HQPBlock::kSumExpRow ) ? h.se[ i ] : h.pn[ i ];
+     if( ( vb.hard_row_value( k , i , x ) <= u ) &&
+         ( cut_slack( vb , *ct , x ) > 1e-12 ) )
+      valid = false;
+     ++ct;
+     }
+    }
+  CHECK( valid );
+
+  // the logarithmic form: a new u of the sum-exp row 1 (l = 0) shifts its
+  // cut by log( u' / u ), scaled, that of row 0 (l != 0) removes its cut
+  if( std::string( file ) == "dynamic-log.txt" ) {
+   auto sv = new FakeSolver();
+   vb.register_Solver( sv );
+   const auto fv = objective( vb );
+   const auto se1 = std::next( vb.get_cut_rows().begin() , 3 );
+   const double r1 = se1->get_rhs();
+   const Vec a1 = cut_coefficients( vb , *se1 );
+   vb.set_hard_se( { 12 , 6 } );
+   c = count( sv , fv );
+   CHECK( ( c.rhs == 1 ) && ( c.other == 1 ) && ( c.total() == 2 ) );
+   CHECK( vb.get_cut_rows().size() == violated.size() - 1 );
+   // the gradient of the logarithmic form of row 1 is ( 1 , 1 ), scale 1
+   CHECK( ( std::abs( a1[ 0 ] - 1 ) <= 1e-12 ) &&
+          ( std::abs( a1[ 1 ] - 1 ) <= 1e-12 ) &&
+          ( std::abs( se1->get_rhs() - r1 - std::log( 2.0 ) ) <= 1e-12 ) );
+   vb.unregister_Solver( sv );
+   delete sv;
+   }
+  delete dycc;
+  }
+ std::cout << " the cuts at the boundary, the logarithmic form"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ // the p-norm at z = 0: || x ||_2 + x_0 <= -1, violated at x = 0, gets
+ // the cut x_0 <= -1 (w = 0); the quadratic rows of an HQPBlock with no
+ // static_constraints are not separated, but is_feasible() sees them
+ e0 = errors;
+ {
+  Data Z = small_data();
+  Z.hPN = { Mat::Identity( 2 , 2 ) };
+  Z.hPNb = { {} };
+  Z.hPNp = { 2 };
+  Z.hPNs = { 1 };
+  Z.hPNl = Mat( 1 , 2 );
+  Z.hPNl << 1 , 0;
+  Z.hpn = { -1 };
+  HQPBlock zb;
+  load( zb , Z );
+  generate( zb );
+  Vec g;
+  CHECK( ( zb.hard_row_value( HQPBlock::kPNormRow , 0 , x0 , & g ) == 0 ) &&
+         ( g == Vec( { 1 , 0 } ) ) );
+  set_point( zb , x0 );
+  CHECK( ! zb.is_feasible( false ) );
+  zb.generate_dynamic_constraints();
+  CHECK( zb.get_cut_rows().size() == 1 );
+  if( zb.get_cut_rows().size() == 1 ) {
+   const auto & cut = zb.get_cut_rows().front();
+   CHECK( ( cut_coefficients( zb , cut ) == Vec( { 1 , 0 } ) ) &&
+          ( cut.get_rhs() == -1 ) );
+   }
+
+  HQPBlock qb;
+  load( qb , quad_data() );
+  generate( qb );
+  CHECK( ! qb.has_quad_cuts() );
+  set_point( qb , xv );
+  qb.generate_dynamic_constraints();
+  CHECK( qb.get_cut_rows().empty() && ( ! qb.is_feasible( false ) ) &&
+         ( ! qb.is_feasible( true ) ) );
+  set_point( qb , x0 );
+  CHECK( qb.is_feasible( false ) && qb.is_feasible( true ) );
+  }
+ std::cout << " the p-norm at z = 0, the quadratic rows not as cuts"
+           << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+
+ delete s;
+ delete stcc;
+ }
+
+/*--------------------------------------------------------------------------*/
 
 int main( int argc , char ** argv )
 {
@@ -2489,6 +3500,10 @@ int main( int argc , char ** argv )
  test_modifications();
  test_netcdf();
  test_print();
+ test_hard_rows();
+ test_quad_rows();
+ test_conic_rows();
+ test_cut_rows();
  test_reg_weights();
  test_refix();
  test_scale();

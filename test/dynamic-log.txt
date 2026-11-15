@@ -1,0 +1,16 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - dynamic-log.txt - - - - - - - - - - - - - - -
+#
+# As dynamic-boundary.txt, the sum-exp hard rows being moreover linearized
+# in the logarithmic form [see HQPBlock::generate_dynamic_constraints()].
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+SimpleConfiguration<std::pair<double,int>>  # exact type
+1e-9  # the relative tolerance of a violation
+3     # bit 1: the boundary point, bit 2: the logarithmic form
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - END dynamic-log.txt - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

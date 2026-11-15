@@ -23,7 +23,15 @@
 
 #include "HQPBlock.h"
 
+#include <algorithm>
+
+#include <cmath>
+
+#include <limits>
+
 #include <numeric>
+
+#include <set>
 
 #include "ColVariableSolution.h"
 
@@ -50,13 +58,16 @@ SMSpp_insert_in_factory_cpp_1( HQPBlock );
 namespace {
 
 // reads the rows of all the levels of one kind (equality or inequality) out
-// of the netCDF group, as described in HQPBlock::deserialize()
+// of the netCDF group, as described in HQPBlock::deserialize(); if !
+// levels, the hard rows of one kind, as the only level P = 1 with neither
+// the variable of the rows of each level nor the weights
 
 void read_rows( const netCDF::NcGroup & group , const std::string & pfx ,
                 std::size_t n , std::size_t P ,
                 std::vector< HQPBlock::SparseMatrix > & M ,
                 std::vector< std::vector< double > > & rhs ,
-                std::vector< std::vector< double > > & wgh )
+                std::vector< std::vector< double > > & wgh ,
+                bool levels = true )
 {
  M.assign( P , HQPBlock::SparseMatrix() );
  rhs.assign( P , {} );
@@ -70,8 +81,9 @@ void read_rows( const netCDF::NcGroup & group , const std::string & pfx ,
   return;
   }
 
- std::vector< unsigned int > rows;
- ::deserialize( group , pfx + "Rows" , P , rows , false );
+ std::vector< unsigned int > rows( 1 , m );
+ if( levels )
+  ::deserialize( group , pfx + "Rows" , P , rows , false );
  std::size_t nnz = 0;
  ::deserialize_dim( group , "Num" + pfx + "Elements" , nnz );
  std::vector< unsigned int > start , index;
@@ -82,7 +94,8 @@ void read_rows( const netCDF::NcGroup & group , const std::string & pfx ,
   ::deserialize( group , pfx + "Value" , nnz , value , false );
   }
  ::deserialize( group , pfx + "RHS" , m , r , false );
- ::deserialize( group , pfx + "Weight" , m , w , true );
+ if( levels )
+  ::deserialize( group , pfx + "Weight" , m , w , true );
 
  if( std::accumulate( rows.begin() , rows.end() , std::size_t( 0 ) ) != m )
   throw( std::invalid_argument( "HQPBlock::deserialize: the sum of " + pfx +
@@ -113,10 +126,12 @@ void read_rows( const netCDF::NcGroup & group , const std::string & pfx ,
 
 /*--------------------------------------------------------------------------*/
 // writes the rows of all the levels of one kind (equality or inequality)
-// into the netCDF group, as described in HQPBlock::deserialize()
+// into the netCDF group, as described in HQPBlock::deserialize(); with no
+// levels, the hard rows of one kind (M of one element), with no variable of
+// the rows of each level
 
 void write_rows( netCDF::NcGroup & group , const std::string & pfx ,
-                 const netCDF::NcDim & levels ,
+                 const netCDF::NcDim * levels ,
                  const std::vector< HQPBlock::SparseMatrix > & M ,
                  const std::vector< double > & rhs ,
                  const std::vector< double > & wgh )
@@ -138,7 +153,8 @@ void write_rows( netCDF::NcGroup & group , const std::string & pfx ,
   }
 
  auto dm = group.addDim( "Num" + pfx + "Rows" , rhs.size() );
- group.addVar( pfx + "Rows" , netCDF::NcUint() , levels ).putVar(
+ if( levels )
+  group.addVar( pfx + "Rows" , netCDF::NcUint() , *levels ).putVar(
                                                                rows.data() );
  group.addVar( pfx + "Start" , netCDF::NcUint() , dm ).putVar(
                                                               start.data() );
@@ -203,6 +219,206 @@ void check_stages( const HQPBlock::StageData & st , std::size_t n ,
  }
 
 /*--------------------------------------------------------------------------*/
+// the nonlinear hard rows, on the matrices of HQPBlock::HardRows
+
+using SpMat = Eigen::SparseMatrix< double , Eigen::RowMajor >;
+using Vec_double = std::vector< double >;
+
+// the product of the row i of M with x
+
+double row_dot( const SpMat & M , Eigen::Index i , const Vec_double & x )
+{
+ double v = 0;
+ for( SpMat::InnerIterator it( M , i ) ; it ; ++it )
+  v += it.value() * x[ it.col() ];
+ return( v );
+ }
+
+/*--------------------------------------------------------------------------*/
+// g += a times the row i of M
+
+void add_row( const SpMat & M , Eigen::Index i , double a , Vec_double & g )
+{
+ for( SpMat::InnerIterator it( M , i ) ; it ; ++it )
+  g[ it.col() ] += a * it.value();
+ }
+
+/*--------------------------------------------------------------------------*/
+
+double dot( const Vec_double & a , const Vec_double & b )
+{
+ return( std::inner_product( a.begin() , a.end() , b.begin() , 0.0 ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+// 1/2 x' Q x + c' x, c the row i of Cq and Q its lower triangle, and in *g
+// (if not nullptr) its gradient Q x + c
+
+double quad_value( const SpMat & Q , const SpMat & Cq , Eigen::Index i ,
+		   const Vec_double & x , Vec_double * g )
+{
+ double v = row_dot( Cq , i , x );
+ if( g ) {
+  g->assign( x.size() , 0 );
+  add_row( Cq , i , 1 , *g );
+  }
+ for( Eigen::Index j = 0 ; j < Q.rows() ; ++j )
+  for( SpMat::InnerIterator it( Q , j ) ; it ; ++it ) {
+   const Eigen::Index k = it.col();
+   if( k == j ) {
+    v += it.value() * x[ j ] * x[ j ] / 2;
+    if( g )
+     ( *g )[ j ] += it.value() * x[ j ];
+    continue;
+    }
+   v += it.value() * x[ j ] * x[ k ];
+   if( g ) {
+    ( *g )[ j ] += it.value() * x[ k ];
+    ( *g )[ k ] += it.value() * x[ j ];
+    }
+   }
+ return( v );
+ }
+
+/*--------------------------------------------------------------------------*/
+// log sum_k c_k exp( a_k' x + b_k ), a_k the rows of A, computed shifted by
+// the largest term, and in *g (if not nullptr) its gradient A' sigma, sigma_k
+// being the term k divided by the sum; - infinity if A has no rows
+
+double lse_value( const SpMat & A , const Vec_double & b ,
+                  const Vec_double & c , const Vec_double & x ,
+                  Vec_double * g )
+{
+ if( g )
+  g->assign( x.size() , 0 );
+ const Eigen::Index K = A.rows();
+ Vec_double t( K );
+ double m = - std::numeric_limits< double >::infinity();
+ for( Eigen::Index k = 0 ; k < K ; ++k ) {
+  t[ k ] = row_dot( A , k , x ) + b[ k ] + std::log( c[ k ] );
+  if( std::isnan( t[ k ] ) )
+   return( t[ k ] );
+  m = std::max( m , t[ k ] );
+  }
+ if( ! std::isfinite( m ) )
+  return( m );
+
+ double s = 0;
+ for( auto & tk : t )
+  s += ( tk = std::exp( tk - m ) );
+ if( g )
+  for( Eigen::Index k = 0 ; k < K ; ++k )
+   add_row( A , k , t[ k ] / s , *g );
+ return( m + std::log( s ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+// || z ||_p, z = A x + b and p >= 1 finite, computed scaled by the largest
+// | z_k |, and in *g (if not nullptr) A' w and in *wb (if not nullptr) w' b,
+// w being the vector of the dual norm with w' z = || z ||_p, i.e., w_k =
+// sign( z_k ) ( | z_k | / || z ||_p )^( p - 1 ), and w = 0 if z = 0
+
+double pnorm_value( const SpMat & A , const Vec_double & b , double p ,
+		    const Vec_double & x , Vec_double * g , double * wb )
+{
+ if( g )
+  g->assign( x.size() , 0 );
+ if( wb )
+  *wb = 0;
+ const Eigen::Index K = A.rows();
+ Vec_double z( K );
+ double mz = 0;
+ for( Eigen::Index k = 0 ; k < K ; ++k ) {
+  z[ k ] = row_dot( A , k , x ) + b[ k ];
+  if( std::isnan( z[ k ] ) )
+   return( z[ k ] );
+  mz = std::max( mz , std::abs( z[ k ] ) );
+  }
+ if( mz == 0 )
+  return( 0 );
+
+ double nrm = 0;
+ if( p == 1 )
+  for( auto zk : z )
+   nrm += std::abs( zk );
+ else {
+  for( auto zk : z )
+   nrm += std::pow( std::abs( zk ) / mz , p );
+  nrm = mz * std::pow( nrm , 1 / p );
+  }
+
+ if( g || wb )
+  for( Eigen::Index k = 0 ; k < K ; ++k ) {
+   if( z[ k ] == 0 )
+    continue;
+   const double w = std::copysign( ( p == 1 ) ? 1.0 :
+                                   std::pow( std::abs( z[ k ] ) / nrm ,
+                                             p - 1 ) , z[ k ] );
+   if( g )
+    add_row( A , k , w , *g );
+   if( wb )
+    *wb += w * b[ k ];
+   }
+ return( nrm );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the end hi of a bracket [ lo , hi ] of the root in ( 0 , 1 ) of the convex
+// phi, phi( 0 ) = f0 < 0 < phi( 1 ) = f1, with 0 <= phi( hi ) <= ftol, by
+// regula falsi with the Illinois correction, bisecting when the step falls
+// out of the bracket or phi is NaN (taken as positive); at most 200 steps
+
+template< class F >
+double boundary( const F & phi , double f0 , double f1 , double ftol )
+{
+ const double inf = std::numeric_limits< double >::infinity();
+ double lo = 0 , hi = 1 , wlo = f0 , whi = f1 , fhi = f1;
+ int side = 0;
+ for( int it = 0 ; ( it < 200 ) && ( fhi > ftol ) && ( hi - lo > 1e-15 ) ;
+      ++it ) {
+  double t = ( lo * whi - hi * wlo ) / ( whi - wlo );
+  if( ! ( ( t > lo ) && ( t < hi ) ) )
+   t = ( lo + hi ) / 2;
+  const double ft = phi( t );
+  if( ! ( ft < 0 ) ) {
+   hi = t;
+   fhi = whi = std::isnan( ft ) ? inf : ft;
+   if( side > 0 )
+    wlo /= 2;
+   side = 1;
+   }
+  else {
+   lo = t;
+   wlo = ft;
+   if( side < 0 )
+    whi /= 2;
+   side = -1;
+   }
+  }
+ return( hi );
+ }
+
+/*--------------------------------------------------------------------------*/
+// the tolerance in the Configuration c, a SimpleConfiguration< double > or
+// a SimpleConfiguration< std::pair< double , int > >, which also gives the
+// int; false if c is neither
+
+bool extract_pair( Configuration * c , double & tol , int & bits )
+{
+ if( auto tc = dynamic_cast< SimpleConfiguration< double > * >( c ) ) {
+  tol = tc->f_value;
+  return( true );
+  }
+ if( auto tc = dynamic_cast< SimpleConfiguration< std::pair< double ,
+                                                  int > > * >( c ) ) {
+  tol = tc->f_value.first;
+  bits = tc->f_value.second;
+  return( true );
+  }
+ return( false );
+ }
+
+/*--------------------------------------------------------------------------*/
 
 }  // end( unnamed namespace )
 
@@ -216,11 +432,12 @@ void HQPBlock::load( Index n , std::vector< SparseMatrix > && A ,
 		     std::vector< Vec_double > && d ,
 		     std::vector< Vec_double > && we ,
 		     std::vector< Vec_double > && wi , double eps ,
-		     Vec_double && rw , StageData && stages )
+		     Vec_double && rw , StageData && stages ,
+		     HardRows && hard )
 {
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
 	       std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
-	       std::move( rw ) , std::move( stages ) );
+	       std::move( rw ) , std::move( stages ) , std::move( hard ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -239,7 +456,8 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
 			     std::vector< Vec_double > && d ,
 			     std::vector< Vec_double > && we ,
 			     std::vector< Vec_double > && wi , double eps ,
-			     Vec_double && rw , StageData && stages )
+			     Vec_double && rw , StageData && stages ,
+			     HardRows && hard )
 {
  const Index P = A.size();
  if( ( ! n ) || ( ! P ) )
@@ -281,6 +499,99 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
                                  "wi of level " + std::to_string( p ) ) );
   }
 
+ // the hard rows: a matrix of no rows is none, whatever its columns
+ for( int k = 0 ; k < 2 ; ++k ) {
+  auto & M = k ? hard.C : hard.A;
+  const auto & r = k ? hard.d : hard.b;
+  if( ! M.rows() )
+   M.resize( 0 , n );
+  if( ( Index( M.cols() ) != n ) || ( Index( M.rows() ) != r.size() ) )
+   throw( std::invalid_argument( std::string( "HQPBlock::guts_of_load: "
+                                 "the hard " ) + ( k ? "C and d" : "A and "
+                                 "b" ) + " have wrong sizes" ) );
+  M.makeCompressed();
+  }
+
+ // the quadratic hard rows: Q[ i ] is n x n, of which the lower triangle
+ // is kept
+ if( ! hard.Cq.rows() )
+  hard.Cq.resize( 0 , n );
+ if( ( Index( hard.Cq.cols() ) != n ) ||
+     ( Index( hard.Cq.rows() ) != hard.eq.size() ) ||
+     ( hard.Q.size() != hard.eq.size() ) )
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: the hard Q, Cq "
+                                "and eq have wrong sizes" ) );
+ hard.Cq.makeCompressed();
+ for( auto & Qi : hard.Q ) {
+  if( ( Index( Qi.rows() ) != n ) || ( Index( Qi.cols() ) != n ) )
+   throw( std::invalid_argument( "HQPBlock::guts_of_load: a hard Q is not "
+                                 "n x n" ) );
+  Qi = SparseMatrix( Qi.triangularView< Eigen::Lower >() );
+  Qi.makeCompressed();
+  }
+
+ // the sum-exp and the p-norm hard rows: each matrix has n columns, its b
+ // (empty meaning all 0) and its c (empty meaning all ones) one entry per
+ // row of it, and the linear terms are the rows of an n-column matrix
+ const auto conic = [ n ]( std::vector< SparseMatrix > & M ,
+			   std::vector< Vec_double > & B ,
+			   std::vector< Vec_double > * W , SparseMatrix & L ,
+			   const Vec_double & u , const char * nm ) {
+  const std::string what = std::string( "HQPBlock::guts_of_load: the hard " )
+                           + nm;
+  const Index m = u.size();
+  if( ! L.rows() )
+   L.resize( 0 , n );
+  if( B.empty() )
+   B.resize( m );
+  if( W && W->empty() )
+   W->resize( m );
+  if( ( Index( L.cols() ) != n ) || ( Index( L.rows() ) != m ) ||
+      ( M.size() != m ) || ( B.size() != m ) || ( W && ( W->size() != m ) ) )
+   throw( std::invalid_argument( what + " rows have wrong sizes" ) );
+  L.makeCompressed();
+  for( Index i = 0 ; i < m ; ++i ) {
+   const Index r = M[ i ].rows();
+   if( ! r )
+    M[ i ].resize( 0 , n );
+   if( Index( M[ i ].cols() ) != n )
+    throw( std::invalid_argument( what + " matrix " + std::to_string( i ) +
+                                  " has not n columns" ) );
+   M[ i ].makeCompressed();
+   if( B[ i ].empty() )
+    B[ i ].assign( r , 0 );
+   if( B[ i ].size() != r )
+    throw( std::invalid_argument( what + " b " + std::to_string( i ) +
+                                  " has wrong size" ) );
+   if( ! W )
+    continue;
+   auto & w = ( *W )[ i ];
+   if( w.empty() )
+    w.assign( r , 1 );
+   if( w.size() != r )
+    throw( std::invalid_argument( what + " c " + std::to_string( i ) +
+                                  " has wrong size" ) );
+   for( auto c : w )
+    if( ! ( c > 0 ) )
+     throw( std::invalid_argument( what + " c " + std::to_string( i ) +
+                                   " is not positive" ) );
+   }
+  };
+ conic( hard.SE , hard.SEb , & hard.SEc , hard.SEl , hard.se , "sum-exp" );
+ conic( hard.PN , hard.PNb , nullptr , hard.PNl , hard.pn , "p-norm" );
+ if( hard.PNs.empty() )
+  hard.PNs.assign( hard.pn.size() , 1 );
+ if( ( hard.PNp.size() != hard.pn.size() ) ||
+     ( hard.PNs.size() != hard.pn.size() ) )
+  throw( std::invalid_argument( "HQPBlock::guts_of_load: the hard PNp or "
+                                "PNs have wrong sizes" ) );
+ for( Index i = 0 ; i < hard.pn.size() ; ++i )
+  if( ( ! ( hard.PNp[ i ] >= 1 ) ) || ( ! std::isfinite( hard.PNp[ i ] ) ) ||
+      ( ! ( hard.PNs[ i ] > 0 ) ) || ( ! std::isfinite( hard.PNs[ i ] ) ) )
+   throw( std::invalid_argument( "HQPBlock::guts_of_load: the hard p-norm "
+                                 "row " + std::to_string( i ) + " has not "
+                                 "p >= 1 and s > 0" ) );
+
  Index me = 0 , mi = 0;
  for( Index p = 0 ; p < P ; ++p ) {
   me += b[ p ].size();
@@ -292,6 +603,7 @@ void HQPBlock::guts_of_load( Index n , std::vector< SparseMatrix > && A ,
 
  f_n = n;
  f_stages = std::move( stages );
+ f_hard = std::move( hard );
  f_eps = eps;
  v_rw = std::move( rw );
  v_center.clear();
@@ -372,10 +684,69 @@ void HQPBlock::deserialize( const netCDF::NcGroup & group )
   st.dynamics_level = dl;
   }
 
+ HardRows hard;
+ for( int k = 0 ; k < 2 ; ++k ) {
+  std::vector< SparseMatrix > M;
+  std::vector< Vec_double > r , w;
+  read_rows( group , k ? "HardIneq" : "HardEq" , n , 1 , M , r , w ,
+             false );
+  ( k ? hard.C : hard.A ) = std::move( M[ 0 ] );
+  ( k ? hard.d : hard.b ) = std::move( r[ 0 ] );
+  }
+ {
+  std::vector< SparseMatrix > M;
+  std::vector< Vec_double > r , w;
+  read_rows( group , "HardQuad" , n , 1 , M , r , w , false );
+  hard.Cq = std::move( M[ 0 ] );
+  hard.eq = std::move( r[ 0 ] );
+  const Index mq = hard.eq.size();
+  std::size_t nq = 0;
+  ::deserialize_dim( group , "NumHardQuadQElements" , nq );
+  std::vector< unsigned int > qr , qi , qj;
+  std::vector< double > qv;
+  if( nq ) {
+   ::deserialize( group , "HardQuadQRow" , nq , qr , false );
+   ::deserialize( group , "HardQuadQI" , nq , qi , false );
+   ::deserialize( group , "HardQuadQJ" , nq , qj , false );
+   ::deserialize( group , "HardQuadQValue" , nq , qv , false );
+   }
+  std::vector< std::vector< Eigen::Triplet< double > > > trp( mq );
+  for( std::size_t k = 0 ; k < nq ; ++k ) {
+   if( ( qr[ k ] >= mq ) || ( qi[ k ] >= n ) || ( qj[ k ] > qi[ k ] ) )
+    throw( std::invalid_argument( "HQPBlock::deserialize: an element of "
+                                  "a hard Q out of range, or above the "
+                                  "diagonal" ) );
+   trp[ qr[ k ] ].emplace_back( qi[ k ] , qj[ k ] , qv[ k ] );
+   }
+  hard.Q.assign( mq , SparseMatrix( n , n ) );
+  for( Index i = 0 ; i < mq ; ++i )
+   hard.Q[ i ].setFromTriplets( trp[ i ].begin() , trp[ i ].end() );
+  }
+ {
+  // the sum-exp and the p-norm hard rows: their linear terms, then their
+  // terms, the hard rows taking the place of the levels
+  std::vector< SparseMatrix > M;
+  std::vector< Vec_double > r , w;
+  read_rows( group , "HardSumExp" , n , 1 , M , r , w , false );
+  hard.SEl = std::move( M[ 0 ] );
+  hard.se = std::move( r[ 0 ] );
+  if( ! hard.se.empty() )
+   read_rows( group , "HardSumExpTerm" , n , hard.se.size() , hard.SE ,
+              hard.SEb , hard.SEc );
+  read_rows( group , "HardPNorm" , n , 1 , M , r , w , false );
+  hard.PNl = std::move( M[ 0 ] );
+  hard.pn = std::move( r[ 0 ] );
+  if( const std::size_t np = hard.pn.size() ) {
+   read_rows( group , "HardPNormTerm" , n , np , hard.PN , hard.PNb , w );
+   ::deserialize( group , "HardPNormP" , np , hard.PNp , false );
+   ::deserialize( group , "HardPNormScale" , np , hard.PNs , true );
+   }
+  }
+
  // the NBModification is issued by Block::deserialize()
  guts_of_load( n , std::move( A ) , std::move( b ) , std::move( C ) ,
 	       std::move( d ) , std::move( we ) , std::move( wi ) , eps ,
-	       std::move( rw ) , std::move( st ) );
+	       std::move( rw ) , std::move( st ) , std::move( hard ) );
 
  // whoever is listening has to find the abstract representation there
  if( anyone_there() ) {
@@ -397,8 +768,58 @@ void HQPBlock::serialize( netCDF::NcGroup & group ) const
  auto dn = group.addDim( "NumVar" , f_n );
  auto dl = group.addDim( "NumLevels" , get_num_levels() );
 
- write_rows( group , "Eq" , dl , v_A , v_b , v_we );
- write_rows( group , "Ineq" , dl , v_C , v_d , v_wi );
+ write_rows( group , "Eq" , & dl , v_A , v_b , v_we );
+ write_rows( group , "Ineq" , & dl , v_C , v_d , v_wi );
+ write_rows( group , "HardEq" , nullptr , { f_hard.A } , f_hard.b , {} );
+ write_rows( group , "HardIneq" , nullptr , { f_hard.C } , f_hard.d , {} );
+ write_rows( group , "HardQuad" , nullptr , { f_hard.Cq } , f_hard.eq , {} );
+ {
+  std::vector< unsigned int > qr , qi , qj;
+  std::vector< double > qv;
+  for( Index i = 0 ; i < f_hard.Q.size() ; ++i )
+   for( Index j = 0 ; j < Index( f_hard.Q[ i ].rows() ) ; ++j )
+    for( SparseMatrix::InnerIterator it( f_hard.Q[ i ] , j ) ; it ; ++it ) {
+     qr.push_back( i );
+     qi.push_back( j );
+     qj.push_back( it.col() );
+     qv.push_back( it.value() );
+     }
+  if( ! qv.empty() ) {
+   auto dq = group.addDim( "NumHardQuadQElements" , qv.size() );
+   group.addVar( "HardQuadQRow" , netCDF::NcUint() , dq ).putVar(
+                                                               qr.data() );
+   group.addVar( "HardQuadQI" , netCDF::NcUint() , dq ).putVar( qi.data() );
+   group.addVar( "HardQuadQJ" , netCDF::NcUint() , dq ).putVar( qj.data() );
+   group.addVar( "HardQuadQValue" , netCDF::NcDouble() , dq ).putVar(
+                                                               qv.data() );
+   }
+  }
+ write_rows( group , "HardSumExp" , nullptr , { f_hard.SEl } , f_hard.se ,
+             {} );
+ if( ! f_hard.se.empty() ) {
+  const auto dr = group.getDim( "NumHardSumExpRows" );
+  Vec_double b , c;
+  for( Index i = 0 ; i < f_hard.se.size() ; ++i ) {
+   b.insert( b.end() , f_hard.SEb[ i ].begin() , f_hard.SEb[ i ].end() );
+   c.insert( c.end() , f_hard.SEc[ i ].begin() , f_hard.SEc[ i ].end() );
+   }
+  write_rows( group , "HardSumExpTerm" , & dr , f_hard.SE , b , c );
+  }
+ write_rows( group , "HardPNorm" , nullptr , { f_hard.PNl } , f_hard.pn ,
+             {} );
+ if( ! f_hard.pn.empty() ) {
+  const auto dr = group.getDim( "NumHardPNormRows" );
+  Vec_double b;
+  for( const auto & bi : f_hard.PNb )
+   b.insert( b.end() , bi.begin() , bi.end() );
+  write_rows( group , "HardPNormTerm" , & dr , f_hard.PN , b , {} );
+  group.addVar( "HardPNormP" , netCDF::NcDouble() , dr ).putVar(
+                                                        f_hard.PNp.data() );
+  if( std::any_of( f_hard.PNs.begin() , f_hard.PNs.end() ,
+                   []( double x ) { return( x != 1 ); } ) )
+   group.addVar( "HardPNormScale" , netCDF::NcDouble() , dr ).putVar(
+                                                        f_hard.PNs.data() );
+  }
 
  if( f_eps != 0 )
   group.addVar( "Regularization" , netCDF::NcDouble() ).putVar( &f_eps );
@@ -480,6 +901,13 @@ void HQPBlock::generate_abstract_constraints( Configuration * stcc )
 
  generate_abstract_variables();
 
+ // bit 1 of the static_constraints: the quadratic hard rows are cuts
+ if( ( ! stcc ) && f_BlockConfig )
+  stcc = f_BlockConfig->f_static_constraints_Configuration;
+ f_quad_cuts = false;
+ if( auto sci = dynamic_cast< SimpleConfiguration< int > * >( stcc ) )
+  f_quad_cuts = sci->f_value & 1;
+
  const Index ne = v_b.size();
  v_eq = std::vector< FRowConstraint >( ne );
  v_in = std::vector< FRowConstraint >( v_d.size() );
@@ -515,13 +943,261 @@ void HQPBlock::generate_abstract_constraints( Configuration * stcc )
    }
   }
 
+ // the hard rows, with no slack
+ const Index nhe = f_hard.b.size();
+ v_heq = std::vector< FRowConstraint >( nhe );
+ v_hin = std::vector< FRowConstraint >( f_hard.d.size() );
+ v_hcols.assign( nhe + f_hard.d.size() , {} );
+ for( int k = 0 ; k < 2 ; ++k ) {
+  const bool eq = ( k == 0 );
+  const auto & M = eq ? f_hard.A : f_hard.C;
+  for( Index h = 0 ; h < Index( M.rows() ) ; ++h ) {
+   auto & cols = v_hcols[ eq ? h : nhe + h ];
+   LinearFunction::v_coeff_pair cf;
+   cf.reserve( M.row( h ).nonZeros() );
+   for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it ) {
+    cf.emplace_back( & v_x[ it.col() ] , it.value() );
+    cols.push_back( it.col() );
+    }
+   auto & row = eq ? v_heq[ h ] : v_hin[ h ];
+   row.set_function( new LinearFunction( std::move( cf ) ) , eNoMod );
+   if( eq )
+    row.set_both( f_hard.b[ h ] , eNoMod );
+   else {
+    row.set_lhs( -Inf< double >() , eNoMod );
+    row.set_rhs( f_hard.d[ h ] , eNoMod );
+    }
+   }
+  }
+
  add_static_constraint( v_eq , "eq" );
  add_static_constraint( v_in , "ineq" );
+ // the quadratic hard rows, each with a QuadFunction on the x it touches:
+ // 1/2 x' Q x has x_j^2 with Q_jj / 2 and x_j x_k (j > k) with Q_jk; none
+ // if they are cuts
+ v_hqd = std::vector< FRowConstraint >( f_quad_cuts ? 0 : f_hard.eq.size() );
+ {
+  std::vector< int > pos( f_n , -1 );
+  for( Index i = 0 ; i < v_hqd.size() ; ++i ) {
+   DQuadFunction::v_coeff_triple vt;
+   std::vector< Index > used;
+   auto act = [ & ]( Index j ) -> Index {
+    if( pos[ j ] < 0 ) {
+     pos[ j ] = vt.size();
+     vt.emplace_back( & v_x[ j ] , 0.0 , 0.0 );
+     used.push_back( j );
+     }
+    return( pos[ j ] );
+    };
+   for( SparseMatrix::InnerIterator it( f_hard.Cq , i ) ; it ; ++it ) {
+    const Index a = act( it.col() );
+    std::get< 1 >( vt[ a ] ) += it.value();
+    }
+   QuadFunction::v_off_diag_term od;
+   const auto & Qi = f_hard.Q[ i ];
+   for( Index j = 0 ; j < Index( Qi.rows() ) ; ++j )
+    for( SparseMatrix::InnerIterator it( Qi , j ) ; it ; ++it ) {
+     const Index a = act( j );
+     const Index c = act( it.col() );
+     if( Index( it.col() ) == j )
+      std::get< 2 >( vt[ a ] ) += it.value() / 2;
+     else
+      od.emplace_back( std::max( a , c ) , std::min( a , c ) , it.value() );
+     }
+   for( auto j : used )
+    pos[ j ] = -1;
+   auto & row = v_hqd[ i ];
+   row.set_function( new QuadFunction( std::move( vt ) , std::move( od ) ) ,
+                     eNoMod );
+   row.set_lhs( -Inf< double >() , eNoMod );
+   row.set_rhs( f_hard.eq[ i ] , eNoMod );
+   }
+  }
+
+ // the cuts of the nonlinear hard rows, none yet
+ const Index nnl = f_hard.eq.size() + f_hard.se.size() + f_hard.pn.size();
+ v_row_cuts.assign( nnl , {} );
+ v_inner_pt.assign( nnl , nullptr );
+
+ add_static_constraint( v_heq , "hard_eq" );
+ add_static_constraint( v_hin , "hard_ineq" );
+ add_static_constraint( v_hqd , "hard_quad" );
  add_dynamic_constraint( v_link , "link" );
+ add_dynamic_constraint( v_cuts , "hard_cuts" );
 
  AR |= HasCns;
 
  }  // end( HQPBlock::generate_abstract_constraints )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::generate_dynamic_constraints( Configuration * dycc )
+{
+ if( ! ( AR & HasCns ) )
+  return;
+
+ double tol = 1e-9;
+ int bits = 0;
+ if( ( ! extract_pair( dycc , tol , bits ) ) && f_BlockConfig )
+  extract_pair( f_BlockConfig->f_dynamic_constraints_Configuration , tol ,
+                bits );
+
+ sync_cuts();
+ Vec_double x;
+ get_x_values( x );
+
+ // the rows strictly satisfied at x share x as their point inside
+ std::shared_ptr< const Vec_double > here;
+ std::list< FRowConstraint > newcuts;
+ std::vector< std::pair< Index , CutRef > > newrefs;
+ Vec_double xf , y( f_n );
+ for( int h = f_quad_cuts ? kQuadRow : kSumExpRow ; h <= kPNormRow ; ++h ) {
+  const auto k = hard_row_kind( h );
+  for( Index i = 0 ; i < num_nl_rows( k ) ; ++i ) {
+   const Index r = nl_row( k , i );
+   const double u = nl_rhs( k , i );
+   const double val = hard_row_value( k , i , x );
+   if( val < u ) {
+    if( ! here )
+     here = std::make_shared< const Vec_double >( x );
+    v_inner_pt[ r ] = here;
+    }
+   const double ftol = tol * std::max( 1.0 , std::abs( u ) );
+   if( ! ( val - u > ftol ) )
+    continue;
+
+   // Kelley at x, or Veinott between the point inside and x
+   xf = x;
+   if( ( bits & 1 ) && v_inner_pt[ r ] ) {
+    const auto & x0 = *v_inner_pt[ r ];
+    const double f0 = hard_row_value( k , i , x0 ) - u;
+    if( f0 < 0 ) {
+     const auto at = [ & ]( double t ) {
+      for( Index j = 0 ; j < f_n ; ++j )
+       y[ j ] = x0[ j ] + t * ( x[ j ] - x0[ j ] );
+      };
+     const double t = boundary( [ & ]( double lam ) {
+                                 at( lam );
+                                 return( hard_row_value( k , i , y ) - u );
+                                 } , f0 , val - u , ftol );
+     at( t );
+     xf = y;
+     }
+    }
+
+   LinearFunction::v_coeff_pair cf;
+   double rhs = 0 , scale = 1;
+   bool lg = false;
+   if( ( ! row_cut( k , i , xf , bits & 2 , cf , rhs , scale , lg ) ) ||
+       known_cut( r , cf , rhs ) )
+    continue;
+   newcuts.emplace_back();
+   auto & cut = newcuts.back();
+   cut.set_lhs( -Inf< double >() , eNoMod );
+   cut.set_rhs( rhs , eNoMod );
+   cut.set_function( new LinearFunction( std::move( cf ) ) , eNoMod );
+   newrefs.push_back( { r , { std::prev( newcuts.end() ) , & cut , scale ,
+                              lg } } );
+   }
+  }
+
+ if( newcuts.empty() )
+  return;
+
+ // the iterators stay valid through the splice into v_cuts
+ add_dynamic_constraints( v_cuts , newcuts , eNoBlck );
+ for( auto & [ r , ref ] : newrefs )
+  v_row_cuts[ r ].push_back( ref );
+
+ }  // end( HQPBlock::generate_dynamic_constraints )
+
+/*--------------------------------------------------------------------------*/
+
+double HQPBlock::hard_row_value( hard_row_kind k , Index i ,
+                                 const Vec_double & x , Vec_double * g ) const
+{
+ if( i >= num_nl_rows( k ) )
+  throw( std::invalid_argument( "HQPBlock::hard_row_value: row " +
+                                std::to_string( i ) + " out of range" ) );
+ if( x.size() != f_n )
+  throw( std::invalid_argument( "HQPBlock::hard_row_value: wrong size" ) );
+
+ if( k == kQuadRow )
+  return( quad_value( f_hard.Q[ i ] , f_hard.Cq , i , x , g ) );
+
+ if( k == kSumExpRow ) {
+  const double S = std::exp( lse_value( f_hard.SE[ i ] , f_hard.SEb[ i ] ,
+                                        f_hard.SEc[ i ] , x , g ) );
+  if( g ) {
+   for( auto & gj : *g )
+    gj *= S;
+   add_row( f_hard.SEl , i , 1 , *g );
+   }
+  return( S + row_dot( f_hard.SEl , i , x ) );
+  }
+
+ const double s = f_hard.PNs[ i ];
+ const double nrm = pnorm_value( f_hard.PN[ i ] , f_hard.PNb[ i ] ,
+                                 f_hard.PNp[ i ] , x , g , nullptr );
+ if( g ) {
+  for( auto & gj : *g )
+   gj *= s;
+  add_row( f_hard.PNl , i , 1 , *g );
+  }
+ return( s * nrm + row_dot( f_hard.PNl , i , x ) );
+
+ }  // end( HQPBlock::hard_row_value )
+
+/*--------------------------------------------------------------------------*/
+
+bool HQPBlock::is_feasible( bool useabstract , Configuration * fsbc )
+{
+ double tol = DefaultFeasTol;
+ int rel = 1;
+ if( ( ! extract_pair( fsbc , tol , rel ) ) && f_BlockConfig )
+  extract_pair( f_BlockConfig->f_is_feasible_Configuration , tol , rel );
+
+ if( useabstract && ( AR & HasCns ) )
+  return( ColVariable::is_feasible( v_x , tol ) &&
+          ColVariable::is_feasible( v_v , tol ) &&
+          ColVariable::is_feasible( v_w , tol ) &&
+          RowConstraint::is_feasible( v_eq , tol , rel ) &&
+          RowConstraint::is_feasible( v_in , tol , rel ) &&
+          RowConstraint::is_feasible( v_heq , tol , rel ) &&
+          RowConstraint::is_feasible( v_hin , tol , rel ) &&
+          RowConstraint::is_feasible( v_hqd , tol , rel ) &&
+          RowConstraint::is_feasible( v_link , tol , rel ) &&
+          RowConstraint::is_feasible( v_cuts , tol , rel ) );
+
+ if( ! ( AR & HasVar ) )
+  return( Block::is_feasible( useabstract , fsbc ) );
+
+ Vec_double x;
+ get_x_values( x );
+ // the violation of a row of right-hand side r is within the tolerance
+ const auto within = [ tol , rel ]( double viol , double r ) {
+  return( viol <= tol * ( rel ? std::max( 1.0 , std::abs( r ) ) : 1.0 ) );
+  };
+
+ for( Index h = 0 ; h < f_hard.b.size() ; ++h )
+  if( ! within( std::abs( row_dot( f_hard.A , h , x ) - f_hard.b[ h ] ) ,
+                f_hard.b[ h ] ) )
+   return( false );
+ for( Index h = 0 ; h < f_hard.d.size() ; ++h )
+  if( ! within( row_dot( f_hard.C , h , x ) - f_hard.d[ h ] ,
+                f_hard.d[ h ] ) )
+   return( false );
+ for( int h = kQuadRow ; h <= kPNormRow ; ++h ) {
+  const auto k = hard_row_kind( h );
+  for( Index i = 0 ; i < num_nl_rows( k ) ; ++i )
+   if( ! within( hard_row_value( k , i , x ) - nl_rhs( k , i ) ,
+                 nl_rhs( k , i ) ) )
+    return( false );
+  }
+
+ return( Block::is_feasible( useabstract , fsbc ) );
+
+ }  // end( HQPBlock::is_feasible )
 
 /*--------------------------------------------------------------------------*/
 
@@ -787,6 +1463,93 @@ void HQPBlock::set_wi( Index p , const Vec_double & wi , ModParam issueMod )
 
 /*--------------------------------------------------------------------------*/
 
+void HQPBlock::set_hard_b( const Vec_double & b , ModParam issueMod )
+{
+ if( b.size() != f_hard.b.size() )
+  throw( std::invalid_argument( "HQPBlock::set_hard_b: wrong size" ) );
+
+ f_hard.b = b;
+ set_hard_rows( true , nullptr , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_d( const Vec_double & d , ModParam issueMod )
+{
+ if( d.size() != f_hard.d.size() )
+  throw( std::invalid_argument( "HQPBlock::set_hard_d: wrong size" ) );
+
+ f_hard.d = d;
+ set_hard_rows( false , nullptr , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_A( const SparseMatrix & A , ModParam issueMod )
+{
+ if( ( A.rows() != f_hard.A.rows() ) || ( A.cols() != f_hard.A.cols() ) )
+  throw( std::invalid_argument( "HQPBlock::set_hard_A: wrong size" ) );
+
+ set_hard_rows( true , & A , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_C( const SparseMatrix & C , ModParam issueMod )
+{
+ if( ( C.rows() != f_hard.C.rows() ) || ( C.cols() != f_hard.C.cols() ) )
+  throw( std::invalid_argument( "HQPBlock::set_hard_C: wrong size" ) );
+
+ set_hard_rows( false , & C , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_eq( const Vec_double & e , ModParam issueMod )
+{
+ if( e.size() != f_hard.eq.size() )
+  throw( std::invalid_argument( "HQPBlock::set_hard_eq: wrong size" ) );
+
+ const Vec_double old = std::move( f_hard.eq );
+ f_hard.eq = e;
+ if( AR & HasCns )
+  for( Index i = 0 ; i < e.size() ; ++i ) {
+   if( ( i < v_hqd.size() ) && ( v_hqd[ i ].get_rhs() != e[ i ] ) )
+    v_hqd[ i ].set_rhs( e[ i ] , issueMod );
+   shift_cuts( kQuadRow , i , old[ i ] , e[ i ] , issueMod );
+   }
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_se( const Vec_double & u , ModParam issueMod )
+{
+ if( u.size() != f_hard.se.size() )
+  throw( std::invalid_argument( "HQPBlock::set_hard_se: wrong size" ) );
+
+ const Vec_double old = std::move( f_hard.se );
+ f_hard.se = u;
+ if( AR & HasCns )
+  for( Index i = 0 ; i < u.size() ; ++i )
+   shift_cuts( kSumExpRow , i , old[ i ] , u[ i ] , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_pn( const Vec_double & u , ModParam issueMod )
+{
+ if( u.size() != f_hard.pn.size() )
+  throw( std::invalid_argument( "HQPBlock::set_hard_pn: wrong size" ) );
+
+ const Vec_double old = std::move( f_hard.pn );
+ f_hard.pn = u;
+ if( AR & HasCns )
+  for( Index i = 0 ; i < u.size() ; ++i )
+   shift_cuts( kPNormRow , i , old[ i ] , u[ i ] , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
 void HQPBlock::set_regularization( double eps , ModParam issueMod )
 {
  if( ! ( eps >= 0 ) )
@@ -892,6 +1655,28 @@ void HQPBlock::print( std::ostream & output , char vlvl ) const
 {
  output << "HQPBlock with " << f_n << " variables and " << get_num_levels()
         << " levels, regularization " << f_eps << std::endl;
+ if( has_hard_rows() ) {
+  output << " hard rows: " << f_hard.b.size() << " equality, "
+         << f_hard.d.size() << " inequality, " << f_hard.eq.size()
+         << " quadratic" << std::endl;
+  if( ! ( f_hard.se.empty() && f_hard.pn.empty() ) )
+   output << " conic hard rows: " << f_hard.se.size() << " sum-exp, "
+          << f_hard.pn.size() << " p-norm" << std::endl;
+  if( ! v_cuts.empty() )
+   output << " " << v_cuts.size() << " cuts of the nonlinear hard rows"
+          << std::endl;
+  for( int k = 0 ; ( vlvl > 0 ) && ( k < 2 ) ; ++k ) {
+   const bool eq = ( k == 0 );
+   const auto & M = eq ? f_hard.A : f_hard.C;
+   for( Index h = 0 ; h < Index( M.rows() ) ; ++h ) {
+    output << "  ";
+    for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
+     output << " " << it.value() << " x_" << it.col();
+    output << ( eq ? " = " : " <= " )
+           << ( eq ? f_hard.b[ h ] : f_hard.d[ h ] ) << std::endl;
+    }
+   }
+  }
  if( f_stages.num_stages ) {
   output << " " << f_stages.num_stages << " stages, the dynamics at level "
 	 << f_stages.dynamics_level << std::endl;
@@ -935,7 +1720,15 @@ void HQPBlock::guts_of_destructor( void )
   row.clear();
  for( auto & row : v_in )
   row.clear();
+ for( auto & row : v_heq )
+  row.clear();
+ for( auto & row : v_hin )
+  row.clear();
+ for( auto & row : v_hqd )
+  row.clear();
  for( auto & row : v_link )
+  row.clear();
+ for( auto & row : v_cuts )
   row.clear();
  f_obj.clear();
 
@@ -946,8 +1739,15 @@ void HQPBlock::guts_of_destructor( void )
 
  v_eq.clear();
  v_in.clear();
+ v_heq.clear();
+ v_hin.clear();
+ v_hqd.clear();
  v_link.clear();
+ v_cuts.clear();
+ v_row_cuts.clear();
+ v_inner_pt.clear();
  v_cols.clear();
+ v_hcols.clear();
  v_x.clear();
  v_v.clear();
  v_w.clear();
@@ -983,36 +1783,73 @@ void HQPBlock::set_rows( bool eq , Index p , const SparseMatrix * M ,
   return;
 
  const Index first = eq ? v_eq_start[ p ] : v_in_start[ p ];
- const Index ne = v_b.size();
+ update_rows( eq , Mp , ( eq ? v_eq.data() : v_in.data() ) + first ,
+              v_cols.data() + ( eq ? 0 : v_b.size() ) + first ,
+              ( eq ? v_b.data() : v_d.data() ) + first ,
+              ( eq ? v_we.data() : v_wi.data() ) + first , 1 , issueMod );
+
+ }  // end( HQPBlock::set_rows )
+
+/*--------------------------------------------------------------------------*/
+// the coefficients and the right-hand sides of the hard rows (the equality
+// ones if eq) are brought to the data, M (if not nullptr) becoming their
+// new matrix
+
+void HQPBlock::set_hard_rows( bool eq , const SparseMatrix * M ,
+                              ModParam issueMod )
+{
+ auto & Mh = eq ? f_hard.A : f_hard.C;
+ if( M ) {
+  Mh = *M;
+  Mh.makeCompressed();
+  }
+
+ if( ! ( AR & HasCns ) )
+  return;
+
+ update_rows( eq , Mh , eq ? v_heq.data() : v_hin.data() ,
+              v_hcols.data() + ( eq ? 0 : f_hard.b.size() ) ,
+              eq ? f_hard.b.data() : f_hard.d.data() , nullptr , 0 ,
+              issueMod );
+
+ }  // end( HQPBlock::set_hard_rows )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::update_rows( bool eq , const SparseMatrix & M ,
+                            FRowConstraint * rows ,
+                            std::vector< Index > * cols , const double * rhs ,
+                            const double * wgh , Index off ,
+                            ModParam issueMod )
+{
  std::vector< int > pos( f_n , -1 );
 
- for( Index h = 0 ; h < Index( Mp.rows() ) ; ++h ) {
-  const Index i = first + h;
-  const double wg = eq ? v_we[ i ] : v_wi[ i ];
-  auto & row = eq ? v_eq[ i ] : v_in[ i ];
+ for( Index h = 0 ; h < Index( M.rows() ) ; ++h ) {
+  const double wg = wgh ? wgh[ h ] : 1.0;
+  auto & row = rows[ h ];
   auto lf = static_cast< LinearFunction * >( row.get_function() );
-  auto & cols = v_cols[ eq ? i : ne + i ];
+  auto & cl = cols[ h ];
 
   // the new coefficient of each active Variable, the slack excluded
-  Vec_double nc( cols.size() , 0 );
-  for( Index k = 0 ; k < cols.size() ; ++k )
-   pos[ cols[ k ] ] = k;
+  Vec_double nc( cl.size() , 0 );
+  for( Index k = 0 ; k < cl.size() ; ++k )
+   pos[ cl[ k ] ] = k;
   LinearFunction::v_coeff_pair added;
-  for( SparseMatrix::InnerIterator it( Mp , h ) ; it ; ++it )
+  for( SparseMatrix::InnerIterator it( M , h ) ; it ; ++it )
    if( pos[ it.col() ] >= 0 )
     nc[ pos[ it.col() ] ] = wg * it.value();
    else
     added.emplace_back( & v_x[ it.col() ] , wg * it.value() );
-  for( auto c : cols )
+  for( auto c : cl )
    pos[ c ] = -1;
 
   // only the coefficients that change are sent
   Vec_double chg;
   LinearFunction::Subset nms;
-  for( Index k = 0 ; k < cols.size() ; ++k )
-   if( lf->get_coefficient( k + 1 ) != nc[ k ] ) {
+  for( Index k = 0 ; k < cl.size() ; ++k )
+   if( lf->get_coefficient( k + off ) != nc[ k ] ) {
     chg.push_back( nc[ k ] );
-    nms.push_back( k + 1 );
+    nms.push_back( k + off );
     }
   if( ! nms.empty() )
    lf->modify_coefficients( std::move( chg ) , std::move( nms ) , true ,
@@ -1020,19 +1857,19 @@ void HQPBlock::set_rows( bool eq , Index p , const SparseMatrix * M ,
 
   if( ! added.empty() ) {
    for( const auto & a : added )
-    cols.push_back( std::distance( v_x.data() , a.first ) );
+    cl.push_back( std::distance( v_x.data() , a.first ) );
    lf->add_variables( std::move( added ) , issueMod );
    }
 
   if( eq ) {
-   if( row.get_rhs() != wg * v_b[ i ] )
-    row.set_both( wg * v_b[ i ] , issueMod );
+   if( row.get_rhs() != wg * rhs[ h ] )
+    row.set_both( wg * rhs[ h ] , issueMod );
    }
   else
-   if( row.get_rhs() != wg * v_d[ i ] )
-    row.set_rhs( wg * v_d[ i ] , issueMod );
+   if( row.get_rhs() != wg * rhs[ h ] )
+    row.set_rhs( wg * rhs[ h ] , issueMod );
   }
- }  // end( HQPBlock::set_rows )
+ }  // end( HQPBlock::update_rows )
 
 /*--------------------------------------------------------------------------*/
 
@@ -1106,6 +1943,184 @@ void HQPBlock::set_level_in_objective( Index p , bool in , ModParam issueMod )
                    DQuadFunction::Range( start , start + m ) , issueMod );
   }
  }  // end( HQPBlock::set_level_in_objective )
+
+/*--------------------------------------------------------------------------*/
+
+HQPBlock::Index HQPBlock::nl_row( hard_row_kind k , Index i ) const
+{
+ if( k == kQuadRow )
+  return( i );
+ if( k == kSumExpRow )
+  return( f_hard.eq.size() + i );
+ return( f_hard.eq.size() + f_hard.se.size() + i );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+HQPBlock::Index HQPBlock::num_nl_rows( hard_row_kind k ) const
+{
+ if( k == kQuadRow )
+  return( f_hard.eq.size() );
+ return( k == kSumExpRow ? f_hard.se.size() : f_hard.pn.size() );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+double HQPBlock::nl_rhs( hard_row_kind k , Index i ) const
+{
+ if( k == kQuadRow )
+  return( f_hard.eq[ i ] );
+ return( k == kSumExpRow ? f_hard.se[ i ] : f_hard.pn[ i ] );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+bool HQPBlock::row_cut( hard_row_kind k , Index i , const Vec_double & xf ,
+                        bool want_log , LinearFunction::v_coeff_pair & cf ,
+                        double & rhs , double & scale , bool & is_log )
+{
+ const double u = nl_rhs( k , i );
+ Vec_double g;
+ is_log = false;
+ if( k == kPNormRow ) {
+  // s w'( A x + b ) + l' x <= u, w that of the dual norm at xf
+  const double s = f_hard.PNs[ i ];
+  double wb = 0;
+  pnorm_value( f_hard.PN[ i ] , f_hard.PNb[ i ] , f_hard.PNp[ i ] , xf ,
+               & g , & wb );
+  for( auto & gj : g )
+   gj *= s;
+  add_row( f_hard.PNl , i , 1 , g );
+  rhs = u - s * wb;
+  }
+ else
+  if( k == kSumExpRow ) {
+   const double lse = lse_value( f_hard.SE[ i ] , f_hard.SEb[ i ] ,
+                                 f_hard.SEc[ i ] , xf , & g );
+   const double lx = row_dot( f_hard.SEl , i , xf );
+   if( want_log && ( u - lx > 0 ) && std::isfinite( lse ) ) {
+    // log sum_k c_k exp( z_k ) - log( u - l' x ) <= 0
+    is_log = true;
+    add_row( f_hard.SEl , i , 1 / ( u - lx ) , g );
+    rhs = dot( g , xf ) - lse + std::log( u - lx );
+    }
+   else {
+    const double S = std::exp( lse );
+    for( auto & gj : g )
+     gj *= S;
+    add_row( f_hard.SEl , i , 1 , g );
+    rhs = u - S - lx + dot( g , xf );
+    }
+   }
+  else
+   rhs = u - quad_value( f_hard.Q[ i ] , f_hard.Cq , i , xf , & g ) +
+         dot( g , xf );
+
+ if( ! std::isfinite( rhs ) )
+  return( false );
+ scale = 1;
+ for( auto gj : g ) {
+  if( ! std::isfinite( gj ) )
+   return( false );
+  scale = std::max( scale , std::abs( gj ) );
+  }
+
+ cf.clear();
+ for( Index j = 0 ; j < f_n ; ++j )
+  if( g[ j ] != 0 )
+   cf.emplace_back( & v_x[ j ] , g[ j ] / scale );
+ rhs /= scale;
+ return( true );
+
+ }  // end( HQPBlock::row_cut )
+
+/*--------------------------------------------------------------------------*/
+
+bool HQPBlock::known_cut( Index r , const LinearFunction::v_coeff_pair & cf ,
+                          double rhs ) const
+{
+ const auto near = []( double a , double b ) {
+  return( std::abs( a - b ) <= 1e-9 * std::max( 1.0 , std::abs( b ) ) );
+  };
+
+ for( const auto & c : v_row_cuts[ r ] ) {
+  if( ! near( c.row->get_rhs() , rhs ) )
+   continue;
+  const auto lf = static_cast< const LinearFunction * >(
+                                                     c.row->get_function() );
+  const auto & v = lf->get_v_var();
+  if( v.size() != cf.size() )
+   continue;
+  bool same = true;
+  for( Index h = 0 ; same && ( h < cf.size() ) ; ++h )
+   same = ( v[ h ].first == cf[ h ].first ) &&
+          near( v[ h ].second , cf[ h ].second );
+  if( same )
+   return( true );
+  }
+ return( false );
+
+ }  // end( HQPBlock::known_cut )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::shift_cuts( hard_row_kind k , Index i , double u0 , double u1 ,
+                           ModParam issueMod )
+{
+ if( u0 == u1 )
+  return;
+ sync_cuts();
+ auto & rc = v_row_cuts[ nl_row( k , i ) ];
+ if( rc.empty() )
+  return;
+
+ // the logarithmic form shifts by log( u1 / u0 ) only if l_i = 0
+ bool l0 = true;
+ if( k == kSumExpRow )
+  for( SparseMatrix::InnerIterator it( f_hard.SEl , i ) ; it ; ++it )
+   if( it.value() != 0 )
+    l0 = false;
+
+ std::vector< std::list< FRowConstraint >::iterator > rmvd;
+ for( auto it = rc.begin() ; it != rc.end() ; ) {
+  double d = u1 - u0;
+  if( it->log ) {
+   if( ! ( l0 && ( u0 > 0 ) && ( u1 > 0 ) ) ) {
+    rmvd.push_back( it->cut );
+    it = rc.erase( it );
+    continue;
+    }
+   d = std::log( u1 / u0 );
+   }
+  it->cut->set_rhs( it->cut->get_rhs() + d / it->scale , issueMod );
+  ++it;
+  }
+
+ if( ! rmvd.empty() )
+  remove_dynamic_constraints( v_cuts , rmvd , issueMod );
+
+ }  // end( HQPBlock::shift_cuts )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::sync_cuts( void )
+{
+ std::size_t nc = 0;
+ for( const auto & rc : v_row_cuts )
+  nc += rc.size();
+ if( nc == v_cuts.size() )
+  return;
+
+ std::set< const FRowConstraint * > there;
+ for( const auto & c : v_cuts )
+  there.insert( & c );
+ for( auto & rc : v_row_cuts )
+  rc.erase( std::remove_if( rc.begin() , rc.end() ,
+                            [ & there ]( const CutRef & c ) {
+                             return( ! there.count( c.row ) );
+                             } ) , rc.end() );
+
+ }  // end( HQPBlock::sync_cuts )
 
 /*--------------------------------------------------------------------------*/
 /*------------------------ End File HQPBlock.cpp ---------------------------*/

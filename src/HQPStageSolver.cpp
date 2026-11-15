@@ -865,6 +865,8 @@ int HQPStageSolver::compute( bool changedvars )
  const std::string where = "HQPStageSolver::compute: ";
  if( ! hb->get_num_stages() )
   throw( std::invalid_argument( where + "the HQPBlock has no stage data" ) );
+ if( hb->has_hard_rows() )
+  throw( std::invalid_argument( where + "the HQPBlock has hard rows" ) );
  f_hb = hb;
  f_p = hb->get_level();
  if( f_p < hb->get_dynamics_level() )

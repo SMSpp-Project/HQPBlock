@@ -152,7 +152,8 @@ namespace SMSpp_di_unipi_it
  * right-hand sides only is read by the next compute().
  *
  * compute() throws std::invalid_argument if the Block is not an HQPBlock,
- * if it has no stage structure, if the current level is above that of the
+ * if it has no stage structure or it has hard rows [see
+ * HQPBlock::HardRows], if the current level is above that of the
  * dynamics, if the rows of the level of the dynamics are not the dynamics
  * described in HQPBlock::StageData or one of them has weight 0, or if a row
  * of a level not below the current one has an entry out of \f$ u_k \f$,

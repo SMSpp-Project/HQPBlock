@@ -15,7 +15,12 @@ regularization `eps sum_j r_j (x_j - c_j)^2 / 2`, the weights `r_j` being 1
 if not given) keeping the slacks of the higher levels
 at their optimal values. Thus, an equality task of a higher level keeps its
 optimal residual, and an inequality task is never violated more than at its
-optimum.
+optimum. The hierarchy can also have hard rows `A_h x = b_h` and `C_h x <=
+d_h`, which belong to no level and have no slack, i.e., every level is
+solved on the set they define (e.g., the bounds on `x`), and convex
+nonlinear ones: quadratic ones, with a `QuadFunction` or, as the sums of
+exponentials and the p-norms, by the linear cuts of an outer approximation
+that the Block separates at the current `x`.
 
 The classical approach solves each level in the null space of the equality
 tasks of the higher ones, and therefore it faces a different QP at each
