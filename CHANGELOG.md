@@ -61,6 +61,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AbstractBlock`
 - `write_hqp()` of `tools/npz2nc4.py`, which writes an `HQPBlock` out of
   its matrices, dense or CSR, with its hard rows
+- `set_hard_Cq()`, `set_hard_SEl()` and `set_hard_PNl()` of `HQPBlock`,
+  which change the linear terms of the nonlinear hard rows, those of the
+  `QuadFunction` of `hard_quad` and the coefficients of the cuts by
+  Modification (the cuts of the logarithmic form of a sum-exp row are
+  removed), and `set_hard_SEb()` and `set_hard_PNb()`, which change their
+  vectors `b`, shifting the right-hand side of the cuts of a p-norm row
+  and removing those of a sum-exp row
+- `tools/speedcone.py`, which adds to an `HQPBlock` of the radial switching
+  scenario a limit on the speed of each robot at each stage, as quadratic
+  hard rows on new columns tied to the inputs by hard equality rows
+
+### Fixed
+
+- the slacks fixed by `HQPBlock::next_level()` at `w + tol`, which
+  `set_slack_values()` overwrote with `w`, so that
+  `HQPSolver::get_var_solution()` threw with `dblSlackTol > 0`: a fixed
+  slack is now kept, also in `HQPDistBlock`
+- `set_hard_eq()`, `set_hard_se()` and `set_hard_pn()` of `HQPBlock` given
+  the vector of the `HardRows` of the `HQPBlock` itself
 
 ## [0.1.0] - 2026-11-03
 

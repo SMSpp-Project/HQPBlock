@@ -672,13 +672,17 @@ void HQPDistBlock::set_slack_values( Index p , const Vec_double & v ,
  const auto e = f_central.get_eq_start( p );
  const auto i = f_central.get_ineq_start( p );
  for( Index h = 0 ; h < v.size() ; ++h )
-  if( v_eq_cpl[ e + h ] < Inf< Index >() )
-   v_s[ v_eq_cpl[ e + h ] ].set_value( v[ h ] );
+  if( v_eq_cpl[ e + h ] < Inf< Index >() ) {
+   if( ! v_s[ v_eq_cpl[ e + h ] ].is_fixed() )
+    v_s[ v_eq_cpl[ e + h ] ].set_value( v[ h ] );
+   }
   else
    vr[ v_eq_owner[ e + h ] ][ v_eq_pos[ e + h ] ] = v[ h ];
  for( Index h = 0 ; h < w.size() ; ++h )
-  if( v_in_cpl[ i + h ] < Inf< Index >() )
-   v_s[ v_in_cpl[ i + h ] ].set_value( w[ h ] );
+  if( v_in_cpl[ i + h ] < Inf< Index >() ) {
+   if( ! v_s[ v_in_cpl[ i + h ] ].is_fixed() )
+    v_s[ v_in_cpl[ i + h ] ].set_value( w[ h ] );
+   }
   else
    wr[ v_in_owner[ i + h ] ][ v_in_pos[ i + h ] ] = w[ h ];
  for( Index r = 0 ; r < f_R ; ++r )

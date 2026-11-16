@@ -314,18 +314,18 @@ double lse_value( const SpMat & A , const Vec_double & b ,
 
 /*--------------------------------------------------------------------------*/
 // || z ||_p, z = A x + b and p >= 1 finite, computed scaled by the largest
-// | z_k |, and in *g (if not nullptr) A' w and in *wb (if not nullptr) w' b,
-// w being the vector of the dual norm with w' z = || z ||_p, i.e., w_k =
-// sign( z_k ) ( | z_k | / || z ||_p )^( p - 1 ), and w = 0 if z = 0
+// | z_k |, and in *g (if not nullptr) A' w and in *w (if not nullptr) w,
+// the vector of the dual norm with w' z = || z ||_p, i.e., w_k = sign( z_k )
+// ( | z_k | / || z ||_p )^( p - 1 ), and w = 0 if z = 0
 
 double pnorm_value( const SpMat & A , const Vec_double & b , double p ,
-		    const Vec_double & x , Vec_double * g , double * wb )
+		    const Vec_double & x , Vec_double * g , Vec_double * w )
 {
+ const Eigen::Index K = A.rows();
  if( g )
   g->assign( x.size() , 0 );
- if( wb )
-  *wb = 0;
- const Eigen::Index K = A.rows();
+ if( w )
+  w->assign( K , 0 );
  Vec_double z( K );
  double mz = 0;
  for( Eigen::Index k = 0 ; k < K ; ++k ) {
@@ -347,17 +347,17 @@ double pnorm_value( const SpMat & A , const Vec_double & b , double p ,
   nrm = mz * std::pow( nrm , 1 / p );
   }
 
- if( g || wb )
+ if( g || w )
   for( Eigen::Index k = 0 ; k < K ; ++k ) {
    if( z[ k ] == 0 )
     continue;
-   const double w = std::copysign( ( p == 1 ) ? 1.0 :
-                                   std::pow( std::abs( z[ k ] ) / nrm ,
-                                             p - 1 ) , z[ k ] );
+   const double wk = std::copysign( ( p == 1 ) ? 1.0 :
+                                    std::pow( std::abs( z[ k ] ) / nrm ,
+                                              p - 1 ) , z[ k ] );
    if( g )
-    add_row( A , k , w , *g );
-   if( wb )
-    *wb += w * b[ k ];
+    add_row( A , k , wk , *g );
+   if( w )
+    ( *w )[ k ] = wk;
    }
  return( nrm );
  }
@@ -1088,8 +1088,9 @@ void HQPBlock::generate_dynamic_constraints( Configuration * dycc )
    LinearFunction::v_coeff_pair cf;
    double rhs = 0 , scale = 1;
    bool lg = false;
-   if( ( ! row_cut( k , i , xf , bits & 2 , cf , rhs , scale , lg ) ) ||
-       known_cut( r , cf , rhs ) )
+   Vec_double mb;
+   if( ( ! row_cut( k , i , xf , bits & 2 , cf , rhs , scale , lg , mb ) )
+       || known_cut( r , cf , rhs ) )
     continue;
    newcuts.emplace_back();
    auto & cut = newcuts.back();
@@ -1097,7 +1098,7 @@ void HQPBlock::generate_dynamic_constraints( Configuration * dycc )
    cut.set_rhs( rhs , eNoMod );
    cut.set_function( new LinearFunction( std::move( cf ) ) , eNoMod );
    newrefs.push_back( { r , { std::prev( newcuts.end() ) , & cut , scale ,
-                              lg } } );
+                              lg , std::move( mb ) } } );
    }
   }
 
@@ -1371,10 +1372,15 @@ void HQPBlock::set_slack_values( Index p , const Vec_double & v ,
                                 "size" ) );
  if( ! ( AR & HasVar ) )
   return;
+ // a fixed slack keeps its value, w + tol for a fixed level
+ const auto put = []( ColVariable & var , double val ) {
+  if( ! var.is_fixed() )
+   var.set_value( val );
+  };
  for( Index h = 0 ; h < v.size() ; ++h )
-  v_v[ v_eq_start[ p ] + h ].set_value( v[ h ] );
+  put( v_v[ v_eq_start[ p ] + h ] , v[ h ] );
  for( Index h = 0 ; h < w.size() ; ++h )
-  v_w[ v_in_start[ p ] + h ].set_value( w[ h ] );
+  put( v_w[ v_in_start[ p ] + h ] , w[ h ] );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1510,7 +1516,7 @@ void HQPBlock::set_hard_eq( const Vec_double & e , ModParam issueMod )
  if( e.size() != f_hard.eq.size() )
   throw( std::invalid_argument( "HQPBlock::set_hard_eq: wrong size" ) );
 
- const Vec_double old = std::move( f_hard.eq );
+ const Vec_double old = f_hard.eq;
  f_hard.eq = e;
  if( AR & HasCns )
   for( Index i = 0 ; i < e.size() ; ++i ) {
@@ -1527,7 +1533,7 @@ void HQPBlock::set_hard_se( const Vec_double & u , ModParam issueMod )
  if( u.size() != f_hard.se.size() )
   throw( std::invalid_argument( "HQPBlock::set_hard_se: wrong size" ) );
 
- const Vec_double old = std::move( f_hard.se );
+ const Vec_double old = f_hard.se;
  f_hard.se = u;
  if( AR & HasCns )
   for( Index i = 0 ; i < u.size() ; ++i )
@@ -1541,11 +1547,79 @@ void HQPBlock::set_hard_pn( const Vec_double & u , ModParam issueMod )
  if( u.size() != f_hard.pn.size() )
   throw( std::invalid_argument( "HQPBlock::set_hard_pn: wrong size" ) );
 
- const Vec_double old = std::move( f_hard.pn );
+ const Vec_double old = f_hard.pn;
  f_hard.pn = u;
  if( AR & HasCns )
   for( Index i = 0 ; i < u.size() ; ++i )
    shift_cuts( kPNormRow , i , old[ i ] , u[ i ] , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_Cq( const SparseMatrix & Cq , ModParam issueMod )
+{
+ if( ( Cq.rows() != f_hard.Cq.rows() ) || ( Cq.cols() != f_hard.Cq.cols() ) )
+  throw( std::invalid_argument( "HQPBlock::set_hard_Cq: wrong size" ) );
+ set_linear_terms( kQuadRow , Cq , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_SEl( const SparseMatrix & L , ModParam issueMod )
+{
+ if( ( L.rows() != f_hard.SEl.rows() ) || ( L.cols() != f_hard.SEl.cols() ) )
+  throw( std::invalid_argument( "HQPBlock::set_hard_SEl: wrong size" ) );
+ set_linear_terms( kSumExpRow , L , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_PNl( const SparseMatrix & L , ModParam issueMod )
+{
+ if( ( L.rows() != f_hard.PNl.rows() ) || ( L.cols() != f_hard.PNl.cols() ) )
+  throw( std::invalid_argument( "HQPBlock::set_hard_PNl: wrong size" ) );
+ set_linear_terms( kPNormRow , L , issueMod );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_SEb( const std::vector< Vec_double > & b ,
+                             ModParam issueMod )
+{
+ auto nb = shifts_of( f_hard.SE , b , "set_hard_SEb" );
+ for( Index i = 0 ; i < nb.size() ; ++i ) {
+  if( nb[ i ] == f_hard.SEb[ i ] )
+   continue;
+  f_hard.SEb[ i ] = std::move( nb[ i ] );
+  // the cuts are not linear in b: they go
+  if( AR & HasCns )
+   edit_cuts( kSumExpRow , i , []( CutRef & ) { return( false ); } ,
+              issueMod );
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_hard_PNb( const std::vector< Vec_double > & b ,
+                             ModParam issueMod )
+{
+ auto nb = shifts_of( f_hard.PN , b , "set_hard_PNb" );
+ for( Index i = 0 ; i < nb.size() ; ++i ) {
+  if( nb[ i ] == f_hard.PNb[ i ] )
+   continue;
+  // s w'( A x + b ) + l' x <= u becomes s w'( A x + b' ) + l' x <= u
+  Vec_double db( nb[ i ].size() );
+  for( Index k = 0 ; k < db.size() ; ++k )
+   db[ k ] = f_hard.PNb[ i ][ k ] - nb[ i ][ k ];
+  f_hard.PNb[ i ] = std::move( nb[ i ] );
+  if( AR & HasCns )
+   edit_cuts( kPNormRow , i , [ & ]( CutRef & c ) {
+               const double d = dot( c.mb , db );
+               if( d != 0 )
+                c.cut->set_rhs( c.cut->get_rhs() + d / c.scale , issueMod );
+               return( true );
+               } , issueMod );
+  }
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1977,21 +2051,24 @@ double HQPBlock::nl_rhs( hard_row_kind k , Index i ) const
 
 bool HQPBlock::row_cut( hard_row_kind k , Index i , const Vec_double & xf ,
                         bool want_log , LinearFunction::v_coeff_pair & cf ,
-                        double & rhs , double & scale , bool & is_log )
+                        double & rhs , double & scale , bool & is_log ,
+                        Vec_double & mb )
 {
  const double u = nl_rhs( k , i );
  Vec_double g;
  is_log = false;
+ mb.clear();
  if( k == kPNormRow ) {
   // s w'( A x + b ) + l' x <= u, w that of the dual norm at xf
   const double s = f_hard.PNs[ i ];
-  double wb = 0;
   pnorm_value( f_hard.PN[ i ] , f_hard.PNb[ i ] , f_hard.PNp[ i ] , xf ,
-               & g , & wb );
+               & g , & mb );
   for( auto & gj : g )
    gj *= s;
+  for( auto & wk : mb )
+   wk *= s;
   add_row( f_hard.PNl , i , 1 , g );
-  rhs = u - s * wb;
+  rhs = u - dot( mb , f_hard.PNb[ i ] );
   }
  else
   if( k == kSumExpRow ) {
@@ -2048,9 +2125,20 @@ bool HQPBlock::known_cut( Index r , const LinearFunction::v_coeff_pair & cf ,
    continue;
   const auto lf = static_cast< const LinearFunction * >(
                                                      c.row->get_function() );
-  const auto & v = lf->get_v_var();
-  if( v.size() != cf.size() )
+  if( lf->get_v_var().size() != cf.size() )
    continue;
+  // cf is ordered as x, a cut changed by set_linear_terms() may be not
+  const auto by_var = []( const auto & a , const auto & b ) {
+   return( a.first < b.first );
+   };
+  LinearFunction::v_coeff_pair sorted;
+  const auto * vp = & lf->get_v_var();
+  if( ! std::is_sorted( vp->begin() , vp->end() , by_var ) ) {
+   sorted = *vp;
+   std::sort( sorted.begin() , sorted.end() , by_var );
+   vp = & sorted;
+   }
+  const auto & v = *vp;
   bool same = true;
   for( Index h = 0 ; same && ( h < cf.size() ) ; ++h )
    same = ( v[ h ].first == cf[ h ].first ) &&
@@ -2069,10 +2157,6 @@ void HQPBlock::shift_cuts( hard_row_kind k , Index i , double u0 , double u1 ,
 {
  if( u0 == u1 )
   return;
- sync_cuts();
- auto & rc = v_row_cuts[ nl_row( k , i ) ];
- if( rc.empty() )
-  return;
 
  // the logarithmic form shifts by log( u1 / u0 ) only if l_i = 0
  bool l0 = true;
@@ -2081,25 +2165,179 @@ void HQPBlock::shift_cuts( hard_row_kind k , Index i , double u0 , double u1 ,
    if( it.value() != 0 )
     l0 = false;
 
+ edit_cuts( k , i , [ & ]( CutRef & c ) {
+             double d = u1 - u0;
+             if( c.log ) {
+              if( ! ( l0 && ( u0 > 0 ) && ( u1 > 0 ) ) )
+               return( false );
+              d = std::log( u1 / u0 );
+              }
+             c.cut->set_rhs( c.cut->get_rhs() + d / c.scale , issueMod );
+             return( true );
+             } , issueMod );
+
+ }  // end( HQPBlock::shift_cuts )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::edit_cuts( hard_row_kind k , Index i ,
+                          const std::function< bool( CutRef & ) > & f ,
+                          ModParam issueMod )
+{
+ sync_cuts();
+ auto & rc = v_row_cuts[ nl_row( k , i ) ];
  std::vector< std::list< FRowConstraint >::iterator > rmvd;
- for( auto it = rc.begin() ; it != rc.end() ; ) {
-  double d = u1 - u0;
-  if( it->log ) {
-   if( ! ( l0 && ( u0 > 0 ) && ( u1 > 0 ) ) ) {
-    rmvd.push_back( it->cut );
-    it = rc.erase( it );
-    continue;
-    }
-   d = std::log( u1 / u0 );
+ for( auto it = rc.begin() ; it != rc.end() ; )
+  if( f( *it ) )
+   ++it;
+  else {
+   rmvd.push_back( it->cut );
+   it = rc.erase( it );
    }
-  it->cut->set_rhs( it->cut->get_rhs() + d / it->scale , issueMod );
-  ++it;
-  }
 
  if( ! rmvd.empty() )
   remove_dynamic_constraints( v_cuts , rmvd , issueMod );
 
- }  // end( HQPBlock::shift_cuts )
+ }  // end( HQPBlock::edit_cuts )
+
+/*--------------------------------------------------------------------------*/
+
+void HQPBlock::set_linear_terms( hard_row_kind k , const SparseMatrix & L ,
+                                 ModParam issueMod )
+{
+ auto & Lk = ( k == kQuadRow ) ? f_hard.Cq :
+             ( k == kSumExpRow ) ? f_hard.SEl : f_hard.PNl;
+ SparseMatrix L1 = L;  // L may be Lk itself
+ L1.makeCompressed();
+ SparseMatrix L0 = std::move( Lk );
+ Lk = std::move( L1 );
+ if( ! ( AR & HasCns ) )
+  return;
+
+ std::vector< int > pos( f_n , -1 );
+ std::vector< std::pair< Index , double > > dl;
+ for( Index i = 0 ; i < Index( Lk.rows() ) ; ++i ) {
+  // the change l' - l of the row, by merging the two sorted rows
+  dl.clear();
+  SparseMatrix::InnerIterator a( L0 , i ) , b( Lk , i );
+  while( a || b )
+   if( b && ( ( ! a ) || ( b.col() < a.col() ) ) ) {
+    dl.emplace_back( b.col() , b.value() );
+    ++b;
+    }
+   else
+    if( a && ( ( ! b ) || ( a.col() < b.col() ) ) ) {
+     dl.emplace_back( a.col() , - a.value() );
+     ++a;
+     }
+    else {
+     dl.emplace_back( a.col() , b.value() - a.value() );
+     ++a;
+     ++b;
+     }
+  dl.erase( std::remove_if( dl.begin() , dl.end() , []( const auto & d ) {
+             return( d.second == 0 ); } ) , dl.end() );
+  if( dl.empty() )
+   continue;
+
+  // the linear part of the QuadFunction
+  if( ( k == kQuadRow ) && ( i < v_hqd.size() ) ) {
+   auto qf = static_cast< QuadFunction * >( v_hqd[ i ].get_function() );
+   const auto & vt = qf->get_v_var();
+   for( Index h = 0 ; h < vt.size() ; ++h )
+    pos[ std::get< 0 >( vt[ h ] ) - v_x.data() ] = h;
+   Vec_double chg;
+   Subset nms;
+   DQuadFunction::v_coeff_triple added;
+   for( const auto & [ j , d ] : dl )
+    if( pos[ j ] >= 0 ) {
+     nms.push_back( pos[ j ] );
+     chg.push_back( qf->get_linear_coefficient( pos[ j ] ) + d );
+     }
+    else
+     added.emplace_back( & v_x[ j ] , d , 0.0 );
+   for( const auto & t : vt )
+    pos[ std::get< 0 >( t ) - v_x.data() ] = -1;
+   if( ! nms.empty() )
+    qf->modify_linear_coefficients( std::move( chg ) , std::move( nms ) ,
+                                    false , issueMod );
+   if( ! added.empty() )
+    qf->add_variables( std::move( added ) , {} , issueMod );
+   }
+
+  // the cuts take the change on their coefficients, their right-hand
+  // side being independent of l, and are scaled again; the logarithmic
+  // form of a sum-exp row is not linear in l: it goes
+  edit_cuts( k , i , [ & ]( CutRef & c ) {
+   if( c.log )
+    return( false );
+   auto lf = static_cast< LinearFunction * >( c.cut->get_function() );
+   const auto & vv = lf->get_v_var();
+   Vec_double g( vv.size() );
+   for( Index h = 0 ; h < vv.size() ; ++h ) {
+    pos[ vv[ h ].first - v_x.data() ] = h;
+    g[ h ] = vv[ h ].second * c.scale;
+    }
+   LinearFunction::v_coeff_pair added;
+   for( const auto & [ j , d ] : dl )
+    if( pos[ j ] >= 0 )
+     g[ pos[ j ] ] += d;
+    else
+     added.emplace_back( & v_x[ j ] , d );
+   for( const auto & v : vv )
+    pos[ v.first - v_x.data() ] = -1;
+   double sc = 1;
+   for( auto gj : g )
+    sc = std::max( sc , std::abs( gj ) );
+   for( const auto & a : added )
+    sc = std::max( sc , std::abs( a.second ) );
+
+   Vec_double chg;
+   Subset nms;
+   for( Index h = 0 ; h < g.size() ; ++h )
+    if( lf->get_coefficient( h ) != g[ h ] / sc ) {
+     chg.push_back( g[ h ] / sc );
+     nms.push_back( h );
+     }
+   if( ! nms.empty() )
+    lf->modify_coefficients( std::move( chg ) , std::move( nms ) , true ,
+                             issueMod );
+   if( ! added.empty() ) {
+    for( auto & a : added )
+     a.second /= sc;
+    lf->add_variables( std::move( added ) , issueMod );
+    }
+   if( sc != c.scale ) {
+    c.cut->set_rhs( c.cut->get_rhs() * c.scale / sc , issueMod );
+    c.scale = sc;
+    }
+   return( true );
+   } , issueMod );
+  }
+ }  // end( HQPBlock::set_linear_terms )
+
+/*--------------------------------------------------------------------------*/
+
+std::vector< HQPBlock::Vec_double > HQPBlock::shifts_of(
+                                    const std::vector< SparseMatrix > & M ,
+                                    const std::vector< Vec_double > & b ,
+                                    const char * method ) const
+{
+ if( b.size() != M.size() )
+  throw( std::invalid_argument( std::string( "HQPBlock::" ) + method +
+                                ": wrong size" ) );
+ auto nb = b;
+ for( Index i = 0 ; i < nb.size() ; ++i ) {
+  if( nb[ i ].empty() )
+   nb[ i ].assign( M[ i ].rows() , 0 );
+  if( nb[ i ].size() != Index( M[ i ].rows() ) )
+   throw( std::invalid_argument( std::string( "HQPBlock::" ) + method +
+                                 ": b " + std::to_string( i ) +
+                                 " has wrong size" ) );
+  }
+ return( nb );
+
+ }  // end( HQPBlock::shifts_of )
 
 /*--------------------------------------------------------------------------*/
 

@@ -30,7 +30,9 @@ variables: the abstract representation has the `ColVariable` `x`, `v` and
 and a `FRealObjective` with a `DQuadFunction`. Moving to the next level fixes
 the slacks of the level just solved and changes some coefficients of the
 `Objective`; a new step of the Model Predictive Control changes `b_p`, `d_p`,
-`A_p` and `C_p` through the methods of the Block. Since all these are
+`A_p` and `C_p`, and the data of the hard rows, through the methods of the
+Block, which change the cuts of a nonlinear row into those of the new row
+when this is exact and remove them otherwise. Since all these are
 Modification of the same Block, a Solver that can re-optimize (typically an
 active-set one) starts each solve from the previous solution.
 

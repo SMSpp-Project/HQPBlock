@@ -29,6 +29,8 @@
 /*------------------------------ INCLUDES ----------------------------------*/
 /*--------------------------------------------------------------------------*/
 
+#include <functional>
+
 #include <memory>
 
 #include <Eigen/Sparse>
@@ -162,7 +164,9 @@ class HQPLevelBlock : public Block
  /// writes the slacks of level p in their ColVariable
  /** Writes \p v and \p w, of sizes \f$ m_p \f$ and \f$ l_p \f$, in the
   * ColVariable of the slacks of level p, issuing no Modification; a fixed
-  * slack keeps the value it is fixed at [see ColVariable::set_value()]. */
+  * slack is not written and keeps the value it is fixed at, which for the
+  * inequality rows of a fixed level includes the tolerance of
+  * HQPBlock::next_level(). */
 
  virtual void set_slack_values( Index p , const Vec_double & v ,
                                 const Vec_double & w ) = 0;
@@ -646,7 +650,10 @@ class HQPBlock : public HQPLevelBlock
   * \bar{x} > 0 \f$, the cut being otherwise that of the row itself. A cut
   * with the same coefficients and right-hand side (up to 1e-9 relative) as
   * one of the same row already in the group is not added again, and no cut
-  * is ever removed but by set_hard_se() [see there]. The cuts are added by
+  * is ever removed but by set_hard_se(), set_hard_SEl() and set_hard_SEb()
+  * [see there]; set_hard_eq(), set_hard_pn(), set_hard_Cq(), set_hard_PNl()
+  * and set_hard_PNb() change the cuts of the rows they change into cuts of
+  * the new rows. The cuts are added by
   * Block::add_dynamic_constraints() with eNoBlck.
   *
   * The parameters come from \p dycc or, if it is not one of the following,
@@ -1151,6 +1158,63 @@ class HQPBlock : public HQPLevelBlock
  void set_hard_pn( const Vec_double & u , ModParam issueMod = eModBlck );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the linear part \f$ c_i \f$ of the quadratic hard rows
+ /** Changes the matrix Cq of the linear parts \f$ c_i \f$ of the quadratic
+  * hard rows into \p Cq, which must have the same size: the linear
+  * coefficients of the QuadFunction of the FRowConstraint "hard_quad"
+  * change, the new entries being added to it, or, if the rows are imposed
+  * by cuts, the change is added to the coefficients of their cuts, which
+  * stay exact since their right-hand side does not depend on \f$ c_i \f$,
+  * and are divided again by their largest coefficient [see
+  * generate_dynamic_constraints()]; only the rows that change are touched,
+  * by Modification according to \p issueMod. */
+
+ void set_hard_Cq( const SparseMatrix & Cq , ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the linear terms \f$ l_i \f$ of the sum-exp hard rows
+ /** Changes the matrix SEl of the linear terms \f$ l_i \f$ of the sum-exp
+  * hard rows into \p L, which must have the same size, the change of each
+  * row being added to the coefficients of its cuts as set_hard_Cq() does;
+  * the cuts of the logarithmic form of a row that changes are removed
+  * instead, as by Block::remove_dynamic_constraints() with \p issueMod. */
+
+ void set_hard_SEl( const SparseMatrix & L , ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the linear terms \f$ l_i \f$ of the p-norm hard rows
+ /** Changes the matrix PNl of the linear terms \f$ l_i \f$ of the p-norm
+  * hard rows into \p L, which must have the same size, the change of each
+  * row being added to the coefficients of its cuts as set_hard_Cq()
+  * does. */
+
+ void set_hard_PNl( const SparseMatrix & L , ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the vectors \f$ b_i \f$ of the sum-exp hard rows
+ /** Changes the vectors \f$ b_i \f$ of the sum-exp hard rows into \p b,
+  * of one vector per row, of one entry per row of its SE[ i ] (empty
+  * meaning all 0); since a cut is not linear in \f$ b_i \f$, the cuts of
+  * a row whose \f$ b_i \f$ changes are removed, as by
+  * Block::remove_dynamic_constraints() with \p issueMod. */
+
+ void set_hard_SEb( const std::vector< Vec_double > & b ,
+                    ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the vectors \f$ b_i \f$ of the p-norm hard rows
+ /** Changes the vectors \f$ b_i \f$ of the p-norm hard rows into \p b, as
+  * set_hard_SEb() does for the sum-exp ones. The cut \f$ s_i w^\top ( A_i
+  * x + b_i ) + l_i^\top x \leq u_i \f$ of a row [see
+  * generate_dynamic_constraints()] stays valid with \f$ b'_i \f$ in place
+  * of \f$ b_i \f$, since \f$ \| w \|_q \leq 1 \f$: its right-hand side
+  * is shifted by \f$ s_i w^\top ( b_i - b'_i ) \f$, scaled, by
+  * Modification according to \p issueMod. */
+
+ void set_hard_PNb( const std::vector< Vec_double > & b ,
+                    ModParam issueMod = eModBlck );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// changes the weight \f$ \varepsilon \f$ of the regularization
 
  void set_regularization( double eps , ModParam issueMod = eModBlck );
@@ -1315,12 +1379,14 @@ class HQPBlock : public HQPLevelBlock
  /** Writes in \p cf and \p rhs the cut of the row i of kind \p k at \p xf,
   * divided by \p scale [see generate_dynamic_constraints()], in the
   * logarithmic form if \p want_log, the row is a sum-exp one and \f$ u_i -
-  * l_i^\top xf > 0 \f$, which \p is_log tells; returns false if the cut
-  * is not finite. */
+  * l_i^\top xf > 0 \f$, which \p is_log tells, and in \p mb the vector
+  * \f$ s_i w \f$ of a p-norm row (empty for the other kinds) [see
+  * CutRef]; returns false if the cut is not finite. */
 
  bool row_cut( hard_row_kind k , Index i , const Vec_double & xf ,
                bool want_log , LinearFunction::v_coeff_pair & cf ,
-               double & rhs , double & scale , bool & is_log );
+               double & rhs , double & scale , bool & is_log ,
+               Vec_double & mb );
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// true if a cut equal to ( cf , rhs ) is among those of the row r
@@ -1337,6 +1403,41 @@ class HQPBlock : public HQPLevelBlock
 
  void shift_cuts( hard_row_kind k , Index i , double u0 , double u1 ,
                   ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// a cut of a nonlinear hard row, as kept in v_row_cuts
+ struct CutRef;
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// calls f on each cut of the row i of kind k, removing those it refuses
+ /** Calls \p f on each cut of the nonlinear hard row i of kind \p k, which
+  * changes it by Modification according to \p issueMod and returns true,
+  * or returns false and the cut is removed, as by
+  * Block::remove_dynamic_constraints() with \p issueMod. */
+
+ void edit_cuts( hard_row_kind k , Index i ,
+                 const std::function< bool( CutRef & ) > & f ,
+                 ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// changes the linear terms of the rows of kind k into L
+ /** Changes the matrix of the linear terms of the nonlinear hard rows of
+  * kind \p k into \p L, and the abstract representation of each row that
+  * changes [see set_hard_Cq()]. */
+
+ void set_linear_terms( hard_row_kind k , const SparseMatrix & L ,
+                        ModParam issueMod );
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ /// the vectors b of the rows of matrices M, empty ones made all 0
+ /** Returns \p b with each empty vector made all 0, throwing
+  * std::invalid_argument, as by \p method, if a size does not agree with
+  * \p M. */
+
+ [[nodiscard]] std::vector< Vec_double > shifts_of(
+                                     const std::vector< SparseMatrix > & M ,
+                                     const std::vector< Vec_double > & b ,
+                                     const char * method ) const;
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  /// brings v_row_cuts to the rows that are in v_cuts
@@ -1385,6 +1486,7 @@ class HQPBlock : public HQPLevelBlock
   const FRowConstraint * row;  ///< its address
   double scale;  ///< the factor its coefficients were divided by
   bool log;      ///< true if of the logarithmic form of a sum-exp row
+  Vec_double mb;  ///< s w of a p-norm row, the multiplier of b in the cut
   };
 
  /// the cuts of each nonlinear hard row, in the order of nl_row()
