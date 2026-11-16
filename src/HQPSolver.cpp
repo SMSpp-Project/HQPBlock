@@ -24,6 +24,7 @@
 #include <iomanip>
 
 #include "HQPSolver.h"
+#include "Objective.h"
 
 /*--------------------------------------------------------------------------*/
 /*------------------------- NAMESPACE AND USING ----------------------------*/
@@ -38,6 +39,29 @@ using namespace SMSpp_di_unipi_it;
 // register HQPSolver in the Solver factory
 
 SMSpp_insert_in_factory_cpp_0( HQPSolver );
+
+/*--------------------------------------------------------------------------*/
+/*-------------------------------- FUNCTIONS -------------------------------*/
+/*--------------------------------------------------------------------------*/
+
+namespace {
+
+// the value of the Objective of b and of its sub-Blocks at the values of
+// their Variable, each weighted as a Solver attached to b weights it [see
+// Block::get_objective_weight()], w being the weight of b
+double objective_value( Block * b , double w = 1 )
+{
+ double v = 0;
+ if( auto ro = dynamic_cast< RealObjective * >( b->get_objective() ) ) {
+  ro->compute();
+  v = w * ro->value();
+  }
+ for( auto sb : b->get_nested_Blocks() )
+  v += objective_value( sb , w * sb->get_objective_weight() );
+ return( v );
+ }
+
+}  // end( anonymous namespace )
 
 /*--------------------------------------------------------------------------*/
 /*---------------------- CONSTRUCTOR AND DESTRUCTOR ------------------------*/
@@ -205,7 +229,9 @@ int HQPSolver::compute( bool changedvars )
   auto inner = v_inner[ k ];
 
   // the scale of the level, from the value of its Objective (the slacks
-  // and the regularization) in the previous compute()
+  // and the regularization) in the previous compute(), computed at the
+  // solution rather than asked to the inner Solver, whose bounds may be
+  // something else (e.g., those of the dual of a Lagrangian one)
   const auto scale_of = []( double v ) {
    return( ( v > 1e-10 ) && ( v < Inf< double >() ) ? 1 / v : 1.0 );
    };
@@ -225,9 +251,13 @@ int HQPSolver::compute( bool changedvars )
   // starting from the solution just found
   if( f_scale && ( ! known ) && ( st >= kOK ) && ( st < kError ) &&
       inner->has_var_solution() ) {
-   const bool again = ( scale_of( inner->get_ub() ) > 10 );
+   lock_block();
+   inner->get_var_solution();
+   const double v = objective_value( hb );
+   unlock_block();
+   const bool again = ( scale_of( v ) > 10 );
    if( again ) {
-    scale = scale_of( inner->get_ub() );
+    scale = scale_of( v );
     lock_block();
     hb->set_objective_scale( scale );
     unlock_block();
@@ -249,11 +279,10 @@ int HQPSolver::compute( bool changedvars )
   if( ( st != kOK ) && ( f_status == kOK ) )
    f_status = st;
 
-  if( f_scale )
-   v_obj.push_back( inner->get_ub() / scale );
-
   lock_block();
   inner->get_var_solution();
+  if( f_scale )
+   v_obj.push_back( objective_value( hb ) / scale );
 
   Vec_double x;
   hb->get_x_values( x );

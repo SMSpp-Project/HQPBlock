@@ -1,0 +1,27 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - inner-bound.txt - - - - - - - - - - - - - - -
+#
+# The BlockSolverConfig of the inner Solver of the HQPSolver of
+# level-scale.txt: BoundStageSolver, an HQPStageSolver of the unit test
+# whose upper bound is +inf, as that of a Solver that only bounds the value
+# of the level (e.g., a Lagrangian dual one).
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+BlockSolverConfig     # exact type of the Configuration object
+
+1  # the BlockSolverConfig is a "differential" one: values are being set
+
+1  # number of (the names of) Solver in this BlockSolverConfig
+
+# now all the names of the Solver - - - - - - - - - - - - - - - - - - - - - -
+BoundStageSolver  # name of 1st Solver
+
+0  # number of ComputeConfig in this BlockSolverConfig
+
+# end of BlockSolverConfig - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - END inner-bound.txt - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

@@ -193,9 +193,10 @@ class HQPSolver : public Solver
   * - intLevelScale [0]: if 1, the Objective of level p is multiplied by
   *   \f$ 1 / f_p \f$ [see HQPLevelBlock::set_objective_scale()], \f$ f_p
   *   \f$ being the value of its Objective (the slacks and the
-  *   regularization) in the previous compute() or, the first time, the one
-  *   found solving it unscaled, after which the level is solved again if
-  *   \f$ f_p < 0.1 \f$; a level whose Objective is below 1e-10 is not
+  *   regularization) at its solution, not a bound of the inner Solver, in
+  *   the previous compute() or, the first time, the one found solving it
+  *   unscaled, after which the level is solved again if \f$ f_p < 0.1
+  *   \f$; a level whose Objective is below 1e-10 is not
   *   scaled. Nothing changes but the scale of the value that the
   *   inner Solver sees, which is about 1, whence its tolerances, often
   *   absolute ones in practice (a value relative to max( 1 , | f | ), a

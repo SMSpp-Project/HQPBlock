@@ -123,11 +123,17 @@
  *   given stage only at its level, a Block that is not an HQPBlock, wrong
  *   parameters) and the iteration limit;
  *
+ * - HQPSolver with the Objective of each level at value about 1
+ *   (intLevelScale, level-scale.txt) on the integrator, its inner Solver an
+ *   HQPStageSolver whose upper bound is +inf (inner-bound.txt): the scale of
+ *   each level in the second compute() is the inverse of the value of its
+ *   Objective at the solution of the first one;
+ *
  * - with instance files as arguments, only HQPStageSolver on each of them,
  *   against the solution of each level that it carries.
  *
- * The HQPSolver, which needs an inner Solver from another module, is tested
- * by the suite HQPBlock of the system tests of SMS++.
+ * The HQPSolver with the inner Solvers of other modules is tested by the
+ * suite HQPBlock of the system tests of SMS++.
  *
  * \author Donato Meoli \n
  *         Dipartimento di Informatica \n
@@ -157,6 +163,8 @@
 #include "HQPBlock.h"
 
 #include "HQPDistBlock.h"
+
+#include "HQPSolver.h"
 
 #include "HQPStageSolver.h"
 
@@ -3761,6 +3769,84 @@ static void test_hard_setters( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/*--------------------- THE SCALE OF THE LEVELS ----------------------------*/
+/*--------------------------------------------------------------------------*/
+// an HQPStageSolver whose upper bound is not the value of the level, as
+// that of a Solver that only bounds it (e.g., a Lagrangian dual one), which
+// records the scale of the Objective of the HQPBlock at each compute()
+
+class BoundStageSolver : public HQPStageSolver
+{
+ public:
+
+ int compute( bool changedvars = true ) override {
+  scales.push_back( static_cast< HQPBlock * >( get_Block() )
+		    ->get_objective_scale() );
+  return( HQPStageSolver::compute( changedvars ) );
+  }
+
+ OFValue get_ub( void ) override { return( Inf< OFValue >() ); }
+
+ static std::vector< double > scales;
+
+ SMSpp_insert_in_factory_h;
+ };
+
+std::vector< double > BoundStageSolver::scales;
+
+SMSpp_insert_in_factory_cpp_0( BoundStageSolver );
+
+/*--------------------------------------------------------------------------*/
+// HQPSolver with intLevelScale (level-scale.txt) on the integrator, whose
+// inner Solver has no upper bound: the scale of each level is the inverse
+// of the value of its Objective at the solution, i.e., that of its slacks
+// (0, 0, 0, 9/2, 1/2) plus those of the fixed slacks of the levels above
+// (9/2 for the last one), taken from the first compute() by the second
+// one, which gives the same values
+
+static void test_level_scale( void )
+{
+ std::cout << "HQPSolver with the scale of the levels" << std::endl;
+ const int e0 = errors;
+
+ HQPBlock block;
+ load( block , integrator_data() );
+ generate( block );
+ auto c = Configuration::deserialize( "level-scale.txt" );
+ auto bsc = dynamic_cast< BlockSolverConfig * >( c );
+ CHECK( bsc );
+ if( ! bsc ) {
+  delete c;
+  return;
+  }
+ bsc->apply( &block );
+ delete c;
+ HQPSolver * s = nullptr;
+ for( auto x : block.get_registered_solvers() )
+  if( ( s = dynamic_cast< HQPSolver * >( x ) ) )
+   break;
+ CHECK( s );
+
+ for( int run = 0 ; s && ( run < 2 ) ; ++run ) {
+  BoundStageSolver::scales.clear();
+  CHECK( s->compute() == Solver::kOK );
+  std::vector< double > val;
+  for( Index p = 0 ; p < s->get_num_solved_levels() ; ++p )
+   val.push_back( s->get_level_value( p ) );
+  CHECK( values_are( val , { 0 , 0 , 0 , 4.5 , 0.5 } , 1e-7 ) );
+  const auto & sc = BoundStageSolver::scales;
+  if( run ) {
+   CHECK( sc.size() == 5 );
+   CHECK( ( sc.size() == 5 ) && ( std::abs( sc[ 3 ] * 4.5 - 1 ) < 1e-6 ) &&
+	  ( std::abs( sc[ 4 ] * 5 - 1 ) < 1e-6 ) );
+   }
+  }
+
+ block.unregister_Solvers( true );
+ std::cout << ( errors == e0 ? " -> OK" : " -> KO" ) << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
 
 int main( int argc , char ** argv )
 {
@@ -3793,6 +3879,7 @@ int main( int argc , char ** argv )
  test_stage_data();
  test_recursion();
  test_stage_solver();
+ test_level_scale();
 
  std::cout << ( errors ? "HQPBlock: FAILED" : "HQPBlock: all tests passed" )
            << std::endl;

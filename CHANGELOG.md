@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `HQPSolver` with `intLevelScale` takes the value of each level from its
+  `Objective` at the solution of the inner Solver rather than from the
+  upper bound of the latter, which is not that value for a Solver that
+  only bounds it (e.g., a `LagrangianDualSolver`, whose levels were then
+  not scaled)
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
