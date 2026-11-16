@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Added
 
 - the hard rows of `HQPBlock`, `A_h x = b_h` and `C_h x <= d_h`, outside
@@ -175,5 +177,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing from the factory
 - `HQPSolver::compute()` is left unlocked when an inner Solver throws
 
-[Unreleased]: https://gitlab.com/smspp/hqpblock/-/compare/0.1.0...develop
+[Unreleased]: https://gitlab.com/smspp/hqpblock/-/compare/0.2.0...develop
+[0.2.0]: https://gitlab.com/smspp/hqpblock/-/compare/0.1.0...0.2.0
 [0.1.0]: https://gitlab.com/smspp/hqpblock/-/tags/0.1.0
