@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
+### Added
+
+- the hard rows of `HQPBlock`, `A_h x = b_h` and `C_h x <= d_h`, outside
+  the levels, with no slack and no weight, which every level keeps
+  (`HardRows` in `load()`, the groups of rows `hard_eq` and `hard_ineq`,
+  `set_hard_A()`, `set_hard_b()`, `set_hard_C()`, `set_hard_d()` by
+  Modification, and the variables `HardEq*` and `HardIneq*` of the netCDF
+  format); `HQPDistBlock` and `HQPStageSolver` refuse an `HQPBlock` with
+  hard rows
+- quadratic hard rows of `HQPBlock`, `1/2 x' Q_i x + c_i' x <= e_i` with
+  `Q_i` positive semidefinite, which make each level a convex QCQP
+  (`Q`, `Cq` and `eq` of `HardRows`, the group of rows `hard_quad` with a
+  `QuadFunction` each, `set_hard_eq()` by Modification, and the variables
+  `HardQuad*` of the netCDF format); `tools/trots2nc4.py` converts the
+  convex quadratic cost-functions of TROTS (Type 2) into them, and
+  `write_hqp()` of `tools/npz2nc4.py` writes them
+- sum-exp and p-norm hard rows of `HQPBlock`, `sum_k c_ik exp( a_ik' x +
+  b_ik ) + l_i' x <= u_i` and `s_i || A_i x + b_i ||_p_i + l_i' x <= u_i`
+  (`SE`, `SEb`, `SEc`, `SEl`, `se`, `PN`, `PNb`, `PNp`, `PNs`, `PNl` and
+  `pn` of `HardRows`, `set_hard_se()` and `set_hard_pn()`, and the
+  variables `HardSumExp*` and `HardPNorm*` of the netCDF format), imposed
+  by cuts only; `tools/trots2nc4.py` converts the LTCP (Type 4) and the
+  convex gEUD (Type 3, a >= 1, minimised or bounded above) cost-functions
+  of TROTS into them, and `write_hqp()` of `tools/npz2nc4.py` writes them
+- the linear cuts of an outer approximation of the nonlinear hard rows of
+  `HQPBlock`, which `generate_dynamic_constraints()` separates into the
+  dynamic group `hard_cuts`: the linearization at the current `x`, or at
+  the point where the segment from the last point that strictly satisfied
+  the row crosses its boundary, optionally in the logarithmic form for the
+  sum-exp rows, with the tolerance and the method from the
+  `dynamic_constraints` of the `BlockConfig`; bit 1 of its
+  `static_constraints` makes the quadratic hard rows cuts too, for the
+  inner Solvers that take no quadratic rows, and `set_hard_eq()`,
+  `set_hard_se()` and `set_hard_pn()` shift the cuts of the rows they
+  change; a `:MILPSolver` with `intRelaxIntVars` 2 solves and separates
+  in a loop
+- `is_feasible()` of `HQPBlock`, on the hard rows of the data, the
+  nonlinear ones computed by the Block whatever their abstract
+  representation, or on the abstract representation, and
+  `hard_row_value()`, the value and the gradient of a nonlinear hard row
+- `intOneInner` of `HQPSolver`: a single inner Solver for all the levels,
+  each one starting from the solution of the previous level, which is
+  feasible for it, rather than one for each level starting from its
+  solution of the same level in the previous `compute()`
+- `tools/trots2nc4.py`, which converts the lexicographic problem of a case
+  of TROTS, the Radiotherapy Optimisation Test Set, with linear
+  cost-functions (all the proton cases) into the netCDF format of
+  `HQPBlock`, the constraints and `x >= 0` as hard rows (as a level 0 with
+  `--soft`), and its solution as the group `HQPPoint`; with `--weighted`,
+  the weighted sum of the objectives of the case (structure `problem`), of
+  which that solution is the optimum, as the Linear Program of an
+  `AbstractBlock`
+- `write_hqp()` of `tools/npz2nc4.py`, which writes an `HQPBlock` out of
+  its matrices, dense or CSR, with its hard rows
+- `set_hard_Cq()`, `set_hard_SEl()` and `set_hard_PNl()` of `HQPBlock`,
+  which change the linear terms of the nonlinear hard rows, those of the
+  `QuadFunction` of `hard_quad` and the coefficients of the cuts by
+  Modification (the cuts of the logarithmic form of a sum-exp row are
+  removed), and `set_hard_SEb()` and `set_hard_PNb()`, which change their
+  vectors `b`, shifting the right-hand side of the cuts of a p-norm row
+  and removing those of a sum-exp row
+- `tools/speedcone.py`, which adds to an `HQPBlock` of the radial switching
+  scenario a limit on the speed of each robot at each stage, as quadratic
+  hard rows on new columns tied to the inputs by hard equality rows
+
+### Fixed
+
+- the slacks fixed by `HQPBlock::next_level()` at `w + tol`, which
+  `set_slack_values()` overwrote with `w`, so that
+  `HQPSolver::get_var_solution()` threw with `dblSlackTol > 0`: a fixed
+  slack is now kept, also in `HQPDistBlock`
+- `set_hard_eq()`, `set_hard_se()` and `set_hard_pn()` of `HQPBlock` given
+  the vector of the `HardRows` of the `HQPBlock` itself
+
+- the installed module `smspp.hqpblock` could not be imported, since its
+  package gave the interface of the module the target of the library by its
+  name in the build tree, which an installed package does not have
+
 ## [0.1.0] - 2026-11-03
 
 ### Added
@@ -97,5 +177,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing from the factory
 - `HQPSolver::compute()` is left unlocked when an inner Solver throws
 
-[Unreleased]: https://gitlab.com/smspp/hqpblock/-/compare/0.1.0...develop
+[Unreleased]: https://gitlab.com/smspp/hqpblock/-/compare/0.2.0...develop
+[0.2.0]: https://gitlab.com/smspp/hqpblock/-/compare/0.1.0...0.2.0
 [0.1.0]: https://gitlab.com/smspp/hqpblock/-/tags/0.1.0

@@ -208,7 +208,8 @@ class HQPDistBlock : public HQPLevelBlock
   * each of them must own a column of the row if the row has any. If the
   * abstract representation is there already it is constructed anew, and an
   * NBModification is issued. Exception is thrown if the sizes do not
-  * agree. */
+  * agree, or if \p central has hard rows [see HQPBlock::HardRows], which
+  * are not split among the owners. */
 
  void load( const HQPBlock & central , Index R , Vec_Index && col_owner ,
             Vec_Index && eq_owner = {} , Vec_Index && in_owner = {} );

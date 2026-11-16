@@ -1,0 +1,18 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - dynamic-boundary.txt  - - - - - - - - - - - - -
+#
+# The parameters of the separation of the cuts of the nonlinear hard rows
+# of an HQPBlock [see HQPBlock::generate_dynamic_constraints()], which the
+# unit test passes to it: each cut at the boundary point between the last
+# point where its row was strictly satisfied and the current one.
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+SimpleConfiguration<std::pair<double,int>>  # exact type
+1e-9  # the relative tolerance of a violation
+1     # bit 1: the boundary point
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - END dynamic-boundary.txt  - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

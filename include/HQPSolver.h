@@ -64,8 +64,9 @@ namespace SMSpp_di_unipi_it
  *         \mbox{the rows of all the levels} \, \Big\} \;\;,
  * \f]
  *
- by an inner Solver attached to the same HQPBlock, a different one for
- * each level. The inner Solver is any Solver that can deal with a convex
+ * by an inner Solver attached to the same HQPBlock, a different one for
+ * each level (or the same one for all of them, with intOneInner [see
+ * set_par()]). The inner Solver is any Solver that can deal with a convex
  * QP with linear constraints (e.g., a :MILPSolver); all those of the levels
  * are created through the Solver factory out of the same BlockSolverConfig,
  * whose filename is the string parameter strInnerBSC [see set_par()], the
@@ -96,7 +97,9 @@ namespace SMSpp_di_unipi_it
  * scheme whose steps change \f$ b_p \f$, \f$ d_p \f$, \f$ A_p \f$ and
  * \f$ C_p \f$ with the methods of the HQPBlock: two consecutive steps have
  * close problems at the same level, while two levels of the same step have
- * different objectives and slacks fixed; the iterations of all the inner
+ * different objectives and slacks fixed, but the solution of a level is
+ * feasible for the next one, from which a single inner Solver for all the
+ * levels (intOneInner) starts; the iterations of all the inner
  * Solvers in the last compute() are given by get_elapsed_iterations().
  *
  * With intProxCenter == 1 the center of the regularization of the HQPBlock
@@ -138,6 +141,7 @@ class HQPSolver : public Solver
   intProxCenter = intLastAlgPar ,  ///< center at the previous solution
   intRelaxLower ,                  ///< relax the rows of the lower levels
   intLevelScale ,                  ///< each level solved at value about 1
+  intOneInner ,                    ///< one inner Solver for all the levels
   intLastHQPSPar  ///< first allowed int parameter for derived classes
   };
 
@@ -157,7 +161,7 @@ class HQPSolver : public Solver
  /// constructor: the HQPSolver has no Block and no inner Solver
 
  HQPSolver( void ) : Solver() , f_bsc( nullptr ) , f_prox( 0 ) ,
-  f_relax( 1 ) , f_scale( 0 ) , f_verb( 0 ) , f_tol( 0 ) ,
+  f_relax( 1 ) , f_scale( 0 ) , f_one( 0 ) , f_verb( 0 ) , f_tol( 0 ) ,
   f_status( kUnEval ) ,
   f_iter( 0 ) {}
 
@@ -197,7 +201,14 @@ class HQPSolver : public Solver
   *   absolute ones in practice (a value relative to max( 1 , | f | ), a
   *   feasibility tolerance), are relative to the level: e.g., a
   *   decomposition whose levels have values of 1e-6 otherwise stops at a
-  *   gap of the order of the value itself. */
+  *   gap of the order of the value itself;
+  *
+  * - intOneInner [0]: if 1, the inner Solver of level 0 solves all the
+  *   levels, each one starting from the solution of the previous level,
+  *   which is feasible for it since the slacks of that level are fixed at
+  *   their values there; if 0, each level has an inner Solver of its own,
+  *   which starts from its solution of the same level in the previous
+  *   compute(). */
 
  void set_par( idx_type par , int value ) override;
 
@@ -389,6 +400,8 @@ class HQPSolver : public Solver
    return( 1 );
   if( par == intLevelScale )
    return( 0 );
+  if( par == intOneInner )
+   return( 0 );
   return( Solver::get_dflt_int_par( par ) );
   }
 
@@ -421,6 +434,8 @@ class HQPSolver : public Solver
    return( f_relax );
   if( par == intLevelScale )
    return( f_scale );
+  if( par == intOneInner )
+   return( f_one );
   if( par == intLogVerb )
    return( f_verb );
   return( Solver::get_int_par( par ) );
@@ -455,6 +470,8 @@ class HQPSolver : public Solver
    return( intRelaxLower );
   if( name == "intLevelScale" )
    return( intLevelScale );
+  if( name == "intOneInner" )
+   return( intOneInner );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -484,7 +501,8 @@ class HQPSolver : public Solver
   const override {
   static const std::string pars[] = { "intProxCenter" ,
                                       "intRelaxLower" ,
-                                      "intLevelScale" };
+                                      "intLevelScale" ,
+                                      "intOneInner" };
   if( ( idx >= intProxCenter ) && ( idx < intLastHQPSPar ) )
    return( pars[ idx - intProxCenter ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -548,6 +566,7 @@ class HQPSolver : public Solver
  int f_prox;                  ///< intProxCenter
  int f_relax;                 ///< intRelaxLower
  int f_scale;                 ///< intLevelScale
+ int f_one;                   ///< intOneInner
  int f_verb;                  ///< intLogVerb
  double f_tol;                ///< dblSlackTol
 
