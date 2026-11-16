@@ -81,8 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `set_hard_eq()`, `set_hard_se()` and `set_hard_pn()` of `HQPBlock` given
   the vector of the `HardRows` of the `HQPBlock` itself
 
-### Fixed
-
 - the installed module `smspp.hqpblock` could not be imported, since its
   package gave the interface of the module the target of the library by its
   name in the build tree, which an installed package does not have
