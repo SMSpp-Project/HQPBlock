@@ -10,49 +10,18 @@
 #                             Universita' di Pisa                             #
 # --------------------------------------------------------------------------- #
 
-# Since we are using the block factory, objects from linked libraries
-# may wrongly appear unused, and by default the linker does not include them,
-# so we have to force the linking.
-if (BUILD_SHARED_LIBS)
-    if (UNIX AND (NOT APPLE))
-        add_link_options("-Wl,--no-as-needed")
-    endif ()
-else ()
-    if (MSVC)
-        add_link_options("/WHOLEARCHIVE" "/FORCE:MULTIPLE")
-    else () # Unix
-        if (APPLE)
-            add_link_options("-Wl,-all_load")
-        else ()
-            add_link_options("-Wl,--whole-archive,--allow-multiple-definition")
-        endif ()
-    endif ()
-endif ()
+# The classes of the modules register themselves in the factories from
+# static objects, which nothing here names: a shared library is kept by
+# what its module asks of the linker, while an archive has to be taken
+# whole [see SMSppModule.cmake of SMS++].
+smspp_keep_modules()
 
 # ----- HQPBlock_unit_test -------------------------------------------------- #
 
 add_executable(${modName}_unit_test test.cpp)
 target_link_libraries(${modName}_unit_test PRIVATE ${modNamespace}::${modName})
 
-if (WIN32 AND BUILD_SHARED_LIBS AND NOT DEFINED ENV{CONDA_BUILD})
-    # On Windows with shared libraries enabled copies all runtime DLL
-    # dependencies next to the executable in the build directory
-    # (POST_BUILD), using CMake's TARGET_RUNTIME_DLLS generator expression
-    add_custom_command(TARGET ${modName}_unit_test POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:${modName}_unit_test>
-            $<TARGET_FILE_DIR:${modName}_unit_test>
-            COMMAND_EXPAND_LISTS
-            COMMENT "Copying runtime DLLs next to ${modName}_unit_test.exe")
-    # one link at a time, since two copies of the same DLL into a
-    # directory collide, and Ninja links in parallel
-    get_property(_pools GLOBAL PROPERTY JOB_POOLS)
-    if (NOT _pools MATCHES "smspp_runtime_dlls=")
-        set_property(GLOBAL APPEND PROPERTY JOB_POOLS smspp_runtime_dlls=1)
-    endif ()
-    set_property(TARGET ${modName}_unit_test
-                 PROPERTY JOB_POOL_LINK smspp_runtime_dlls)
-endif ()
+smspp_copy_runtime(${modName}_unit_test)
 
 add_test(NAME ${modName}_unit_test
          COMMAND ${modName}_unit_test
