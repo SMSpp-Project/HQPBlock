@@ -50,4 +50,8 @@ HQPBkINC := $(HQPBkINC) $(SMS++INC)
 # external libraries for HQPBlock
 HQPBkLIB = $(SMS++LIB)
 
+# the objects as the shared libraries of the module and of those whose
+# objects it takes [see SMS++/lib/makefile-shared]
+$(eval $(call SMSppSOlib,HQPBk))
+
 ############################ End of makefile #################################
